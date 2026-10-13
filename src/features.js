@@ -50,7 +50,8 @@ export function createFeatureCollector(roleByPreset = {}) {
       if (comparison < 0 || (comparison === 0 && state.ended)) return null
       if (comparison === 0) return state
     }
-    state = { turn, step, evidence: new Set(), calls: new Map(), results: new Map(), ended: false, overflow: false }
+    state = { turn, step, evidence: new Set(), calls: new Map(), results: new Map(),
+      ended: false, overflow: false, unpairedResult: false }
     sessions.delete(sessionId)
     sessions.set(sessionId, state)
     if (sessions.size > 1024) sessions.delete(sessions.keys().next().value)
@@ -76,6 +77,7 @@ export function createFeatureCollector(roleByPreset = {}) {
     if (event.type === 'tool/result') {
       const message = event.data.message
       const rawId = message?.source?.callId
+      if (typeof rawId !== 'string' || rawId.length > 512) state.unpairedResult = true
       const id = typeof rawId === 'string' && rawId.length <= 512 ? rawId
         : 'unpaired:' + (Number.isSafeInteger(event.seq) ? event.seq : state.results.size)
       const verdict = message?.isError === true ? 'error' : message?.isError === false ? 'success' : 'unknown'
@@ -98,7 +100,8 @@ export function createFeatureCollector(roleByPreset = {}) {
     const terminalError = state.evidence.has('agent_error')
     const failedIds = [...ids].filter(id => state.results.get(id) === 'error')
     const outcome = terminalError || failedIds.length > 0 ? 'error'
-      : ids.size > 0 && !state.overflow && !state.evidence.has('interrupted')
+      : state.calls.size > 0 && state.calls.size === ids.size
+        && !state.unpairedResult && !state.overflow && !state.evidence.has('interrupted')
         && [...ids].every(id => state.results.get(id) === 'success') ? 'success' : 'unknown'
     const relevant = failedIds.length ? failedIds : [...ids]
     const operations = new Set(relevant.map(id => operationFor({ toolName: state.calls.get(id) })))

@@ -31,10 +31,13 @@ test('error operation comes from errored calls, not successful neighboring actio
   assert.equal(observe([call('a', 'read'), result('a', true), call('b', 'write'), result('b', true)]).operation, 'unknown')
 })
 
-test('missing verdict, missing result, and model-only completion remain unknown', () => {
+test('missing or unpaired result, missing verdict, and model-only completion remain unknown', () => {
   for (const events of [[], [call('a', 'read')], [call('a', 'read'), result('a')],
-    [call('a', 'read'), result('a', false), call('b', 'write')]])
+    [call('a', 'read'), result('a', false), call('b', 'write')],
+    [result('a', false)], [call('a', 'read'), result('a', false), result('b', false)],
+    [call('unpaired:0', 'read'), result(undefined, false)]])
     assert.equal(observe(events).outcome, 'unknown')
+  assert.equal(observe([result('a', true)]).outcome, 'error')
 })
 
 test('an error wins over success while duplicate results count once', () => {

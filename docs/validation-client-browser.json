@@ -1,5 +1,5 @@
 {
-  "verifiedAt": "2026-10-13T08:30:10.241Z",
+  "verifiedAt": "2026-10-13T09:22:55.364Z",
   "dshVersion": "0.2.0-rc.2",
   "reactVersion": "18.3.1",
   "reactDomVersion": "18.3.1",
@@ -10,13 +10,14 @@
   "width": 1240,
   "height": 1000,
   "sidebarWidth": 420,
-  "clientSha256": "eec5ec18aa1ac1449a6e3f42577424deae1af8023248e3128b2cacaf6b6aadb8",
+  "clientSha256": "86f3ae3e58763ff0855a2bd741144a9dab81a0b95c7ab46f10036abe1bc91fa4",
   "status": "passed",
   "checks": [
     "real-react-dom-renders-three-step-rows-and-decimal-probabilities",
     "risk-sort-and-conditional-factor-details-and-zero-revision",
     "420px-sidebar-no-horizontal-overflow-and-screenshot",
     "session-switch-displays-only-selected-session",
+    "evaluated-turn-forecast-renders-pre-post-and-active-step-without-mixing-step-impact",
     "delayed-old-session-response-does-not-overwrite-current-session",
     "empty-session-state",
     "read-error-keeps-previous-data-and-shows-visible-alert",

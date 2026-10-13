@@ -100,6 +100,8 @@ async function main() {
       sessionId, turn: 1, step: ordinal, ordinal, revision: 0, observedAt: fixedTime,
       role: 'worker', delegationDepth: 0, toolNames, toolCount: toolNames.length,
       outcome, operation, evidenceCodes: outcome === 'error' ? ['tool_error'] : [], stepFailure,
+      turnRisk: { status: 'missing_model', horizon: 'turn_final_failure',
+        pre: null, post: null, delta: null, modelVersion: null, support: null },
     }
   }
   const records = {
@@ -110,6 +112,10 @@ async function main() {
     ],
     'fixture-session-b': [row('fixture-session-b', 1, 0.012, 'success', ['session_b_read'])],
     'fixture-session-empty': [],
+  }
+  records['fixture-session-b'][0].turnRisk = {
+    status: 'evaluated_model', horizon: 'turn_final_failure', pre: 0.2,
+    post: 0.4, delta: 0.2, modelVersion: 'turn-failure-empirical-v1', support: 24,
   }
   const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Step Risk browser verification</title>
 <style>body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;color:#202227;background:#f5f6f8}main{display:grid;grid-template-columns:minmax(0,1fr) 420px;min-height:100vh}aside{border-left:1px solid #ddd;background:white;height:100vh;overflow:hidden}.fixture{padding:36px}button,select{padding:8px;margin:5px;font:inherit}h1{font-size:25px}.note{max-width:550px;line-height:1.8;color:#5c6470}.badge{display:inline-block;padding:6px 10px;border:1px solid #bbc6d3;border-radius:20px;color:#52657a;font-size:12px}code{font-family:Consolas,monospace;font-size:12px}</style>
@@ -137,9 +143,15 @@ document.getElementById('fixture-session').onchange=event=>{sessionId=event.targ
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       response.setHeader('Cache-Control', 'no-store')
       if (serverState.fail) { response.writeHead(503); response.end(JSON.stringify({ error: 'fixture unavailable' })); return }
-      response.end(JSON.stringify({ schemaVersion: 1, pluginVersion: '0.2.0', calibration: 'experimental_uncalibrated', sessionId,
+      response.end(JSON.stringify({ schemaVersion: 1, pluginVersion: '0.3.0', calibration: 'experimental_uncalibrated', sessionId,
         sessions: Object.keys(records).map(id => ({ sessionId: id, updatedAt: fixedTime, stepCount: records[id].length })),
-        steps: records[sessionId] || [], updatedAt: fixedTime }))
+        steps: records[sessionId] || [], updatedAt: fixedTime,
+        turnRiskModel: { status: sessionId === 'fixture-session-b' ? 'ready' : 'missing_model',
+          modelVersion: sessionId === 'fixture-session-b' ? 'turn-failure-empirical-v1' : null },
+        activeTurnForecast: sessionId === 'fixture-session-b'
+          ? { turn: 1, step: 2, phase: 'pre', status: 'evaluated_model',
+            horizon: 'turn_final_failure', value: 0.4, modelVersion: 'turn-failure-empirical-v1', support: 24 }
+          : null }))
       return
     }
     const content = url.pathname === '/' ? html : url.pathname === '/react-bundle.js' ? bundle.code : url.pathname === '/client.js' ? clientSource : null
@@ -174,7 +186,13 @@ document.getElementById('fixture-session').onchange=event=>{sessionId=event.targ
     await page.getByText('session_b_read', { exact: true }).waitFor()
     assert.equal(await page.getByRole('article').count(), 1)
     assert.doesNotMatch(await page.locator('#panel').innerText(), /runtime_probe/)
+    assert.match(await page.locator('#panel').innerText(), /本轮目标终局失败风险/)
+    assert.match(await page.locator('#panel').innerText(), /\+20\.0 个百分点/)
+    assert.match(await page.locator('#panel').innerText(), /执行前/)
+    assert.match(await page.locator('#panel').innerText(), /当前模型回算/)
+    assert.match(await page.locator('#panel').innerText(), /历史回算可能包含训练期样本/)
     checks.push('session-switch-displays-only-selected-session')
+    checks.push('evaluated-turn-forecast-renders-pre-post-and-active-step-without-mixing-step-impact')
     serverState.delaySession = 'fixture-session-a'
     await page.getByLabel('Fixture session').selectOption('fixture-session-a')
     await page.getByLabel('Fixture session').selectOption('fixture-session-b')

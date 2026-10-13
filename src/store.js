@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path'
 import { estimateStepFailure } from './step-probability.js'
 
 const SCHEMA_VERSION = 1
-const PLUGIN_VERSION = '0.2.0'
+const PLUGIN_VERSION = '0.3.0'
+const READABLE_PLUGIN_VERSIONS = new Set(['0.2.0', PLUGIN_VERSION])
 const CALIBRATION = 'experimental_uncalibrated'
 const FILE_PATTERN = /^[a-f0-9]{64}\.json$/
 const MAX_DIRECTORY_ENTRIES = 4096
@@ -168,7 +169,7 @@ export function createStore({ dataDir = null, maxSessions = 100, maxStepsPerSess
         if (length !== stat.size) continue
         const raw = JSON.parse(buffer.toString('utf8', 0, length))
         if (!isObject(raw) || raw.schemaVersion !== SCHEMA_VERSION
-          || raw.pluginVersion !== PLUGIN_VERSION || raw.calibration !== CALIBRATION
+          || !READABLE_PLUGIN_VERSIONS.has(raw.pluginVersion) || raw.calibration !== CALIBRATION
           || !Array.isArray(raw.steps) || raw.steps.length > MAX_SAVED_STEPS) continue
         const id = sessionIdentity(raw.sessionId)
         if (fileName(id) !== candidate.name) continue

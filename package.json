@@ -1,7 +1,7 @@
 {
   "name": "dsh-step-risk",
-  "version": "0.2.0",
-  "description": "Per-step final-failure model estimates with a native DeepSeek Harness panel",
+  "version": "0.3.0",
+  "description": "Step contribution estimates and evaluated turn-failure forecasts for DeepSeek Harness",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -17,11 +17,13 @@
     "scripts/verify-dsh-runtime.cjs",
     "scripts/dsh-runtime-smoke.mjs",
     "scripts/verify-client-browser.cjs",
+    "scripts/train-turn-risk.mjs",
     "README.md",
     "docs"
   ],
   "scripts": {
     "test": "node --test",
+    "train:turn-risk": "node scripts/train-turn-risk.mjs",
     "verify:dsh": "node scripts/verify-dsh-runtime.cjs",
     "verify:client": "node scripts/verify-client-browser.cjs"
   },

@@ -19,9 +19,11 @@ try {
   const runtime = resolve(argument('--runtime-root')
     ?? join(dirname(executable), 'resources', 'app.asar', 'dsh'))
   const reportPath = argument('--report')
+  const syntheticModel = process.argv.includes('--synthetic-model')
   if (!existsSync(executable)) throw new Error(`DeepSeek Harness executable not found: ${executable}`)
   const result = spawnSync(executable, [
     '--expose-internals', join(__dirname, 'dsh-runtime-smoke.mjs'), runtime,
+    ...(syntheticModel ? ['--synthetic-model'] : []),
   ], {
     encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_TELEMETRY_DISABLED: '1' },

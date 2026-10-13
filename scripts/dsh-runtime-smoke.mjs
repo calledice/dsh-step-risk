@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 assert.ok(process.versions.electron, 'Run through verify-dsh-runtime.cjs using Desktop Electron')
 assert.ok(process.argv[2], 'Installed app.asar/dsh runtime path is required')
 const runtime = resolve(process.argv[2])
+const syntheticModel = process.argv[3] === '--synthetic-model'
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const requireRuntime = createRequire(join(runtime, 'package.json'))
 const importRuntime = name => import(pathToFileURL(requireRuntime.resolve(name)).href)
@@ -23,8 +24,10 @@ const installedPlugin = join(profileDir, 'node_modules', 'dsh-step-risk')
 const dataDir = join(profileDir, 'step-risk')
 const privateMarker = 'fixture-private-prompt-and-output-must-not-be-retained'
 const snapshots = []
+const forecasts = []
 const eventKinds = []
 let application
+let syntheticTraining = null
 
 function textResponse(text) {
   return [
@@ -63,6 +66,24 @@ try {
     assert.ok(source.startsWith(project + sep), 'Package files must remain inside the project')
     if (existsSync(source)) cpSync(source, join(installedPlugin, file), { recursive: true })
   }
+  if (syntheticModel) {
+    const { trainTurnRiskModel } = await import(pathToFileURL(join(installedPlugin, 'src', 'turn-risk.js')).href)
+    const labeled = Array.from({ length: 120 }, (_, index) => {
+      const sessionId = 'synthetic-session-' + index
+      const failure = index % 2 === 1
+      return {
+        sessionId, turn: 1, outcome: failure ? 'failure' : 'success',
+        completedAt: new Date(Date.UTC(2026, 9, 13) + index * 60_000).toISOString(),
+        steps: [{ sessionId, turn: 1, step: 1, revision: 0,
+          outcome: failure ? 'error' : 'success', operation: 'unknown',
+          evidenceCodes: failure ? ['tool_error'] : [] }],
+      }
+    })
+    syntheticTraining = trainTurnRiskModel(labeled)
+    assert.equal(syntheticTraining.eligible, true, JSON.stringify(syntheticTraining.report))
+    mkdirSync(dataDir, { recursive: true })
+    writeFileSync(join(dataDir, 'turn-risk-model.json'), JSON.stringify(syntheticTraining.model) + '\n')
+  }
   writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
     name: 'dsh-profile-step-risk-smoke', private: true,
     dependencies: { 'dsh-step-risk': `file:${installedPlugin.replaceAll('\\', '/')}` },
@@ -96,6 +117,7 @@ try {
   assert.ok(ctx.get('webServer'), 'Production WebServer must be mounted')
   assert.ok(ctx.get('connection'), 'Production authenticated Connection must be mounted')
   ctx.on('step-risk/prediction', snapshot => { snapshots.push(snapshot) })
+  ctx.on('step-risk/turn-forecast', forecast => { forecasts.push(forecast) })
   ctx.on('session/event', (_session, event) => { eventKinds.push(event.type) })
   const { LlmAdapter, createUserMessage } = await importRuntime('@deepseek-ai/dsh-llm')
   const { SessionId } = await importRuntime('@deepseek-ai/dsh-session')
@@ -136,6 +158,24 @@ try {
   assert.equal(toolExecutions, 2, 'Real tool runtime must execute both success and failure')
   assert.ok(eventKinds.includes('step/end') && eventKinds.includes('tool/result'))
   assert.equal(snapshots.length, 3, 'Each real Agent step must produce one risk prediction')
+  assert.equal(forecasts.length, 3, 'Each real Agent step must expose one pre-step turn forecast')
+  const expectedTurnRiskStatus = syntheticModel ? 'evaluated_model' : 'missing_model'
+  assert.ok(forecasts.every(item => item.horizon === 'turn_final_failure'
+    && item.status === expectedTurnRiskStatus
+    && (syntheticModel ? Number.isFinite(item.value) : item.value === null)))
+  assert.ok(snapshots.every(item => item.turnRisk?.projection === 'at_step_end'))
+  if (syntheticModel) {
+    assert.ok(snapshots.every(item => item.turnRisk.status === 'evaluated_model'
+      && Number.isFinite(item.turnRisk.pre) && Number.isFinite(item.turnRisk.post)
+      && Number.isFinite(item.turnRisk.delta)))
+    assert.equal(forecasts[0].value, snapshots[0].turnRisk.pre)
+    assert.equal(forecasts[1].value, snapshots[0].turnRisk.post)
+    assert.equal(forecasts[2].value, snapshots[1].turnRisk.post)
+    assert.ok(snapshots[0].turnRisk.post < snapshots[0].turnRisk.pre,
+      'An observed successful step must lower the synthetic model forecast')
+    assert.ok(snapshots[1].turnRisk.post > snapshots[1].turnRisk.pre,
+      'An observed error must raise the synthetic model forecast')
+  }
   assert.equal(JSON.stringify(snapshots).includes(privateMarker), false, 'Risk output must not retain task content')
   assert.ok(snapshots.some(snapshot => JSON.stringify(snapshot).includes('tool_error')))
 
@@ -148,9 +188,10 @@ try {
       'Successful, failed, and unknown steps must retain their declared model estimates')
     assert.equal(snapshot.calibration, 'experimental_uncalibrated')
   })
-  const persistedFiles = jsonFiles(dataDir)
+  const storedJson = jsonFiles(dataDir)
+  const persistedFiles = storedJson.filter(file => /^[a-f0-9]{64}\.json$/i.test(basename(file)))
   assert.ok(persistedFiles.length > 0, 'Bundle default must persist records in the isolated profile')
-  const persisted = persistedFiles.map(file => readFileSync(file, 'utf8')).join('\n')
+  const persisted = storedJson.map(file => readFileSync(file, 'utf8')).join('\n')
   assert.equal(persisted.includes(privateMarker), false, 'Risk persistence must not retain task content')
   const { createStore } = await import(pathToFileURL(join(installedPlugin, 'src', 'store.js')).href)
   const reloaded = createStore({ dataDir }).read(agent.session.id)
@@ -186,7 +227,19 @@ try {
   assert.equal(routeData.pluginVersion, manifest.version)
   assert.equal(routeData.calibration, 'experimental_uncalibrated')
   assert.equal(routeData.sessionId, agent.session.id)
-  assert.deepEqual(routeData.steps, reloaded.steps, 'Native GET must expose exactly the sanitized persisted records')
+  assert.equal(routeData.turnRiskModel.status, syntheticModel ? 'ready' : 'missing_model')
+  if (syntheticModel) {
+    assert.equal(routeData.turnRiskModel.validation.eligible, true)
+    assert.ok(routeData.turnRiskModel.validation.holdoutTurns >= 30)
+  }
+  assert.equal(routeData.activeTurnForecast, null)
+  assert.deepEqual(routeData.steps.map(({ turnRisk, ...row }) => row), reloaded.steps,
+    'Native GET must preserve the sanitized durable records')
+  assert.ok(routeData.steps.every(row => row.turnRisk.status === expectedTurnRiskStatus
+    && (syntheticModel ? Number.isFinite(row.turnRisk.pre) && Number.isFinite(row.turnRisk.post)
+      && Number.isFinite(row.turnRisk.delta)
+      : row.turnRisk.pre === null && row.turnRisk.post === null && row.turnRisk.delta === null)
+    && row.turnRisk.projection === 'retrospective_current_model'))
   assert.equal(routeBody.includes(privateMarker), false, 'Native GET must not return raw task/output data')
   const invalidQuery = await fetch(routeUrl + '?unexpected=1', { headers: { Cookie: cookie } })
   assert.equal(invalidQuery.status, 400)
@@ -196,9 +249,14 @@ try {
     verifiedAt: new Date().toISOString(), dshVersion: version,
     electronVersion: process.versions.electron, nodeVersion: process.versions.node,
     mode: 'genuine-loader-profile-and-agent-loop-with-deterministic-llm',
-    realProviderRequest: false, profileInstallation: 'isolated-copy-of-package-files',
+    realProviderRequest: false, syntheticEvaluatedModel: syntheticModel,
+    syntheticTrainingTurns: syntheticTraining?.report.trainingTurns ?? null,
+    syntheticHoldoutTurns: syntheticTraining?.report.holdoutTurns ?? null,
+    profileInstallation: 'isolated-copy-of-package-files',
     loader: true, realAgentLoop: true, realSessionEvents: true, realToolExecutions: toolExecutions,
     completedSteps: snapshots.length, modelCalls: adapter.calls, stepFailure: hasStepFailure,
+    preStepForecasts: forecasts.length, numericForecasts: forecasts.filter(item =>
+      Number.isFinite(item.value)).length, turnRiskStatus: routeData.turnRiskModel.status,
     stepOutcomes: snapshots.map(item => item.outcome), stepFailureValues: snapshots.map(item => item.stepFailure.value),
     persistenceFiles: persistedFiles.map(file => relative(dataDir, file)),
     defaultProfileDataDirectory: true, persistenceReload: true,

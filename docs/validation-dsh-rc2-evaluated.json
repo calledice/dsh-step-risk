@@ -1,0 +1,47 @@
+{
+  "verifiedAt": "2026-10-13T09:31:16.487Z",
+  "dshVersion": "0.2.0-rc.2",
+  "electronVersion": "44.0.0",
+  "nodeVersion": "24.18.1",
+  "mode": "genuine-loader-profile-and-agent-loop-with-deterministic-llm",
+  "realProviderRequest": false,
+  "syntheticEvaluatedModel": true,
+  "syntheticTrainingTurns": 84,
+  "syntheticHoldoutTurns": 36,
+  "profileInstallation": "isolated-copy-of-package-files",
+  "loader": true,
+  "realAgentLoop": true,
+  "realSessionEvents": true,
+  "realToolExecutions": 2,
+  "completedSteps": 3,
+  "modelCalls": 3,
+  "stepFailure": true,
+  "preStepForecasts": 3,
+  "numericForecasts": 3,
+  "turnRiskStatus": "ready",
+  "stepOutcomes": [
+    "success",
+    "error",
+    "unknown"
+  ],
+  "stepFailureValues": [
+    0.012,
+    0.135,
+    0.045
+  ],
+  "persistenceFiles": [
+    "cdff24e90a8e31807a05d5808a5e60ffed88dfdf56161e60c25914c89187f922.json"
+  ],
+  "defaultProfileDataDirectory": true,
+  "persistenceReload": true,
+  "nativeConnection": true,
+  "unauthenticatedStatus": 401,
+  "untrustedOriginStatus": 403,
+  "authenticatedRouteStatus": 200,
+  "authenticatedRouteJson": true,
+  "invalidQueryStatus": 400,
+  "mutationStatus": 404,
+  "privacyMarkerAbsent": true,
+  "userProfileTouched": false,
+  "clientRendering": "not-tested-by-this-script"
+}

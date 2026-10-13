@@ -90,8 +90,8 @@ export function estimateStepFailure(input) {
 
   if (outcome === 'success') {
     problem = PRIORS.successfulOperationProblem
-    summary = '执行结果成功，但仍可能留下与最终目标有关的问题。'
-    reason = '结果成功：本步引入或留下相关问题的设计先验为 4%，执行成功并不保证最终目标达成。'
+    summary = '工具结果未标为错误，但仍可能留下与最终目标有关的问题。'
+    reason = '工具未标错：本步引入或留下相关问题的设计先验为 4%，该信号不证明预期操作或最终目标成功。'
   } else if (outcome === 'error' && operation === 'action') {
     problem = PRIORS.failedActionProblem
     summary = '本步操作报错，可能留下影响最终目标的问题。'

@@ -101,11 +101,11 @@ function harness({ protocol = 'dsh-app:', fetcher, native = true } = {}) {
   }
 }
 
-function snapshot(steps = [], sessionId = 'session-a') {
+function snapshot(steps = [], sessionId = 'session-a', extra = {}) {
   return {
     schemaVersion: 1, pluginVersion: '0.2.0', calibration: 'experimental_uncalibrated',
     sessionId, sessions: [{ sessionId: 'session-a', updatedAt: '2026-10-13T00:00:00Z', stepCount: steps.length }],
-    steps, updatedAt: '2026-10-13T00:00:00Z',
+    steps, updatedAt: '2026-10-13T00:00:00Z', ...extra,
   }
 }
 
@@ -116,7 +116,7 @@ function step(ordinal, value, extra = {}) {
     toolNames: ['read_file'], toolCount: 1, outcome: 'success', operation: 'read', evidenceCodes: [],
     stepFailure: { modelVersion: 'step-failure-chain-v1', status: 'model_estimate', value,
       source: 'rules', factors: { problem: 0.2, persistence: 0.3, impact: 0.4 },
-      evidenceQuality: 'low', summary: '只读步骤', reasons: ['工具返回成功'], limitations: ['尚未校准'], evidenceRefs: [] },
+      evidenceQuality: 'low', summary: '只读步骤', reasons: ['工具未标错'], limitations: ['尚未校准'], evidenceRefs: [] },
     ...extra,
   }
 }
@@ -159,13 +159,57 @@ test('native view scopes desktop GET reads, renders decimals and never sends a b
   assert.equal(app.requests[0].options.method, 'GET')
   assert.equal(app.requests[0].options.body, undefined)
   const text = textContent(app.tree)
-  assert.match(text, /每步最终失败概率（模型估计）/)
+  assert.match(text, /步骤影响与本轮终局风险/)
   assert.match(text, /2\.4%/)
   assert.match(text, /experimental_uncalibrated/)
-  assert.match(text, /成功/)
+  assert.match(text, /暂无可用概率/)
+  assert.match(text, /实际结果：\s*工具未标错/)
   assert.match(text, /20\.0%/)
   app.unmount()
   assert.equal(app.timers.size, 0)
+})
+
+test('evaluated turn forecast shows pre/post values and a non-causal change', async () => {
+  const row = step(1, 0.024, { turnRisk: {
+    status: 'evaluated_model', horizon: 'turn_final_failure', pre: 0.2, post: 0.4,
+    delta: 0.2, modelVersion: 'turn-failure-empirical-v1', support: 24,
+  } })
+  const app = harness({ fetcher: async () => ({ ok: true, json: async () => snapshot([row], 'session-a', {
+    turnRiskModel: { status: 'ready', modelVersion: 'turn-failure-empirical-v1',
+      validation: { testTurns: 32, brier: 0.12, ece: 0.06 } },
+    activeTurnForecast: { turn: 1, step: 2, phase: 'pre', status: 'evaluated_model',
+      horizon: 'turn_final_failure', value: 0.4, modelVersion: 'turn-failure-empirical-v1', support: 24 },
+  }) }) })
+  app.mount(nativeKey, nativeProps())
+  await app.flush()
+  const content = textContent(app.tree)
+  assert.match(content, /本轮目标终局失败风险/)
+  assert.match(content, /执行前/)
+  assert.match(content, /20\.0%/)
+  assert.match(content, /40\.0%/)
+  assert.match(content, /\+20\.0 个百分点/)
+  assert.match(content, /变化不代表因果贡献/)
+  assert.match(content, /当前模型回算/)
+  assert.match(content, /历史回算可能包含训练期样本/)
+  app.unmount()
+})
+
+test('incomplete retained prefixes are shown as unavailable in rows and active step', async () => {
+  const row = step(2, 0.024, { turnRisk: {
+    status: 'incomplete_prefix', horizon: 'turn_final_failure', pre: null, post: null,
+    delta: null, modelVersion: null, support: null, projection: 'retrospective_current_model',
+  } })
+  const app = harness({ fetcher: async () => ({ ok: true, json: async () => snapshot([row], 'session-a', {
+    turnRiskModel: { status: 'ready', modelVersion: 'turn-failure-empirical-v1' },
+    activeTurnForecast: { turn: 1, step: 3, phase: 'pre', status: 'incomplete_prefix',
+      horizon: 'turn_final_failure', value: null, modelVersion: null, support: null },
+  }) }) })
+  app.mount(nativeKey, nativeProps())
+  await app.flush()
+  const content = textContent(app.tree)
+  assert.match(content, /本轮较早步骤未保留，无法重建完整历史前缀/)
+  assert.match(content, /执行前预测已弃权/)
+  app.unmount()
 })
 
 test('web uses the authenticated API route and hidden native tabs stop polling', async () => {

@@ -26,7 +26,7 @@ const directory = t => {
 test('memory store returns the latest session and immutable allowlisted records', () => {
   const store = createStore({ dataDir: null })
   assert.deepEqual(store.read(), {
-    schemaVersion: 1, pluginVersion: '0.2.0', calibration: 'experimental_uncalibrated',
+    schemaVersion: 1, pluginVersion: '0.3.0', calibration: 'experimental_uncalibrated',
     sessionId: null, sessions: [], steps: [], updatedAt: null,
   })
   const first = snapshot('older', 1, { prompt: 'DO NOT SAVE', toolArgs: { secret: 'token' } })
@@ -71,6 +71,21 @@ test('atomic hashed session files survive restart and cannot follow a path-like 
   assert.equal(saved.sessionId, id)
   assert.deepEqual(createStore({ dataDir }).read(id).steps, [input])
   assert.equal(readdirSync(dataDir).some(file => file.endsWith('.tmp')), false)
+})
+
+test('existing 0.2.0 records remain readable and are upgraded on the next write', t => {
+  const dataDir = directory(t)
+  const original = createStore({ dataDir })
+  original.put(snapshot('legacy', 1))
+  const file = join(dataDir, filename('legacy'))
+  const envelope = JSON.parse(readFileSync(file, 'utf8'))
+  envelope.pluginVersion = '0.2.0'
+  writeFileSync(file, JSON.stringify(envelope))
+  const upgraded = createStore({ dataDir })
+  assert.equal(upgraded.read('legacy').steps.length, 1)
+  upgraded.put(snapshot('legacy', 2))
+  assert.equal(upgraded.read('legacy').steps.length, 2)
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).pluginVersion, '0.3.0')
 })
 
 test('retention bounds sessions on disk and retains the newest step positions', t => {

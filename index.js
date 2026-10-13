@@ -4,7 +4,8 @@ import { createTracker, normalizeModelConfig } from './src/tracker.js'
 import { estimateStepFailure } from './src/step-probability.js'
 import { createStore } from './src/store.js'
 import { registerSnapshotRoute } from './src/routes.js'
-import { isAbsolute } from 'node:path'
+import { loadTurnRiskModel, predictTurnRisk, projectTurnRisk } from './src/turn-risk.js'
+import { isAbsolute, join } from 'node:path'
 
 export const name = 'dsh-step-risk'
 
@@ -28,10 +29,15 @@ export function normalizePluginConfig(raw = {}) {
   validateRoleMap(roleByPreset)
   if (dataDir !== null && (typeof dataDir !== 'string' || !isAbsolute(dataDir) || dataDir.includes('\0')))
     throw new TypeError('dataDir must be null or an absolute path')
+  const turnRiskModelFile = raw.turnRiskModelFile ?? (dataDir === null ? null : join(dataDir, 'turn-risk-model.json'))
+  if (turnRiskModelFile !== null && (typeof turnRiskModelFile !== 'string'
+    || !isAbsolute(turnRiskModelFile) || turnRiskModelFile.includes('\0')))
+    throw new TypeError('turnRiskModelFile must be null or an absolute path')
   for (const [key, value] of Object.entries({ maxSessions, maxStepsPerSession }))
     if (!Number.isSafeInteger(value) || value < 1 || value > 1000)
       throw new RangeError(key + ' must be an integer in [1, 1000]')
-  return { ...model, logToConsole, logFile, roleByPreset, dataDir, maxSessions, maxStepsPerSession }
+  return { ...model, logToConsole, logFile, roleByPreset, dataDir, turnRiskModelFile,
+    maxSessions, maxStepsPerSession }
 }
 
 export function apply(ctx, rawConfig = {}) {
@@ -43,6 +49,8 @@ export function apply(ctx, rawConfig = {}) {
   const collector = createFeatureCollector(config.roleByPreset)
   const latest = new Map()
   const ordinalBases = new Map()
+  const activeForecasts = new Map()
+  const turnRiskModel = loadTurnRiskModel(config.turnRiskModelFile)
 
   function reportInternalFailure(stage, error) {
     const kind = error instanceof Error ? error.name : 'UnknownError'
@@ -56,7 +64,49 @@ export function apply(ctx, rawConfig = {}) {
     reportInternalFailure('store initialization; using memory', error)
     store = createStore({ ...config, dataDir: null })
   }
-  registerSnapshotRoute(ctx, store)
+  const projectedStore = {
+    read(sessionId) {
+      const record = store.read(sessionId)
+      return {
+        ...record,
+        steps: projectTurnRisk(record.steps, turnRiskModel),
+        turnRiskModel: {
+          status: turnRiskModel.status,
+          modelVersion: turnRiskModel.model?.modelVersion ?? null,
+          validation: turnRiskModel.model?.gate ?? null,
+        },
+        activeTurnForecast: record.sessionId === null
+          ? null : activeForecasts.get(record.sessionId) ?? null,
+      }
+    },
+  }
+  registerSnapshotRoute(ctx, projectedStore)
+
+  function positionIsValid(sessionId, turn, step) {
+    return typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 512
+      && Number.isSafeInteger(turn) && turn >= 0 && Number.isSafeInteger(step) && step >= 0
+  }
+
+  function observeStepStart(session, event) {
+    const sessionId = session?.id
+    const { turn, step } = event?.data ?? {}
+    if (!positionIsValid(sessionId, turn, step)) return
+    const old = activeForecasts.get(sessionId)
+    if (old?.turn === turn && old?.step === step) return
+    const previous = store.read(sessionId).steps
+    if (previous.some(row => row.turn === turn && row.step === step)) return
+    const prefix = previous.filter(row => row.turn === turn && row.step < step)
+    const risk = predictTurnRisk(turnRiskModel, prefix, step)
+    const forecast = { sessionId, turn, step, phase: 'pre', ...risk }
+    activeForecasts.delete(sessionId)
+    activeForecasts.set(sessionId, forecast)
+    if (activeForecasts.size > config.maxSessions)
+      activeForecasts.delete(activeForecasts.keys().next().value)
+    if (typeof ctx.emit === 'function') {
+      try { ctx.emit('step-risk/turn-forecast', forecast) }
+      catch (error) { reportInternalFailure('turn forecast event', error) }
+    }
+  }
 
   function publish(snapshot) {
     latest.delete(snapshot.sessionId)
@@ -64,12 +114,22 @@ export function apply(ctx, rawConfig = {}) {
     if (latest.size > config.maxSessions) {
       const oldest = latest.keys().next().value
       latest.delete(oldest)
+      activeForecasts.delete(oldest)
       ordinalBases.delete(oldest)
       tracker.forgetSession(oldest)
       collector.forgetSession(oldest)
     }
-    try { store.put(snapshot) } catch (error) { reportInternalFailure('store write', error) }
-    const line = JSON.stringify(snapshot)
+    let emitted = snapshot
+    try {
+      store.put(snapshot)
+      const record = projectedStore.read(snapshot.sessionId)
+      const current = record.steps.find(row => row.turn === snapshot.turn && row.step === snapshot.step)
+      if (current) emitted = { ...snapshot, turnRisk: {
+        ...current.turnRisk,
+        projection: snapshot.revision > 0 ? 'at_revision' : 'at_step_end',
+      } }
+    } catch (error) { reportInternalFailure('store write or projection', error) }
+    const line = JSON.stringify(emitted)
     if (config.logToConsole) console.log('[dsh-step-risk] ' + line)
     if (config.logFile) {
       try {
@@ -80,7 +140,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     if (typeof ctx.emit === 'function') {
       try {
-        ctx.emit('step-risk/prediction', snapshot)
+        ctx.emit('step-risk/prediction', emitted)
       } catch (error) {
         reportInternalFailure('prediction event', error)
       }
@@ -90,8 +150,12 @@ export function apply(ctx, rawConfig = {}) {
   ctx.on('session/event', (session, event) => {
     try {
       const observation = collector.observeSessionEvent(session, event)
+      if (event?.type === 'step/start') observeStepStart(session, event)
       if (!observation) return
       const { sessionId, ...stepObservation } = observation
+      const active = activeForecasts.get(sessionId)
+      if (active?.turn === observation.turn && active?.step === observation.step)
+        activeForecasts.delete(sessionId)
       if (!ordinalBases.has(sessionId)) {
         const oldSteps = store.read(sessionId).steps
         ordinalBases.set(sessionId, oldSteps.reduce((max, item) => Math.max(max, item.ordinal), 0))
@@ -140,6 +204,7 @@ export function apply(ctx, rawConfig = {}) {
       collector.forgetSession(session.id)
       tracker.forgetSession(session.id)
       latest.delete(session.id)
+      activeForecasts.delete(session.id)
       ordinalBases.delete(session.id)
     } catch (error) {
       reportInternalFailure('session disposal', error)
