@@ -1,3 +1,5 @@
+import { operationFor } from './step-probability.js'
+
 const VALID_ROLES = new Set(['planner', 'executor', 'verifier', 'other'])
 
 export function inferRole(agentPreset, roleByPreset = {}) {
@@ -31,43 +33,76 @@ export function validateRoleMap(roleByPreset) {
 
 export function createFeatureCollector(roleByPreset = {}) {
   validateRoleMap(roleByPreset)
-  const pending = new Map()
-  const key = (sessionId, turn, step) => JSON.stringify([sessionId, turn, step])
+  // A DSH agent executes one step at a time. Keep only that step, with a
+  // completed position for deduplication; never retain raw event objects.
+  const sessions = new Map()
+  const safeName = value => typeof value === 'string'
+    ? value.replace(/[^A-Za-z0-9._:/-]/g, '_').slice(0, 128) : ''
+  const validPosition = (sessionId, turn, step) => typeof sessionId === 'string'
+    && sessionId.length > 0 && sessionId.length <= 512
+    && Number.isSafeInteger(turn) && turn >= 0 && Number.isSafeInteger(step) && step >= 0
+
+  function stateFor(sessionId, turn, step) {
+    if (!validPosition(sessionId, turn, step)) return null
+    let state = sessions.get(sessionId)
+    if (state) {
+      const comparison = turn === state.turn ? step - state.step : turn - state.turn
+      if (comparison < 0 || (comparison === 0 && state.ended)) return null
+      if (comparison === 0) return state
+    }
+    state = { turn, step, evidence: new Set(), calls: new Map(), results: new Map(), ended: false, overflow: false }
+    sessions.delete(sessionId)
+    sessions.set(sessionId, state)
+    if (sessions.size > 1024) sessions.delete(sessions.keys().next().value)
+    return state
+  }
 
   function addEvidence(sessionId, turn, step, code) {
-    if (typeof sessionId !== 'string' || !Number.isSafeInteger(turn) || !Number.isSafeInteger(step)) return
-    const id = key(sessionId, turn, step)
-    let codes = pending.get(id)
-    if (!codes) {
-      codes = new Set()
-      pending.set(id, codes)
-    }
-    if (code) codes.add(code)
+    stateFor(sessionId, turn, step)?.evidence.add(code)
   }
 
   function observeSessionEvent(session, event) {
     const sessionId = session?.id
     const { turn, step } = event?.data ?? {}
-    if (event?.type === 'step/start') {
-      addEvidence(sessionId, turn, step, null)
-      return null
+    if (!['step/start', 'tool/call', 'tool/result', 'assistant/message', 'assistant/attempt', 'step/end'].includes(event?.type)) return null
+    const state = stateFor(sessionId, turn, step)
+    if (!state) return null
+    if (event.type === 'tool/call') {
+      const id = event.data.callId
+      if (typeof id === 'string' && id.length <= 512 && state.calls.size < 1024)
+        state.calls.set(id, safeName(event.data.name))
+      else state.overflow = true
     }
-    if (event?.type === 'tool/result' && event.data.message?.isError === true) {
-      addEvidence(sessionId, turn, step, 'tool_error')
-      return null
+    if (event.type === 'tool/result') {
+      const message = event.data.message
+      const rawId = message?.source?.callId
+      const id = typeof rawId === 'string' && rawId.length <= 512 ? rawId
+        : 'unpaired:' + (Number.isSafeInteger(event.seq) ? event.seq : state.results.size)
+      const verdict = message?.isError === true ? 'error' : message?.isError === false ? 'success' : 'unknown'
+      if (verdict === 'error') state.evidence.add('tool_error')
+      if (state.results.size < 1024 || state.results.has(id)) {
+        // A contradictory duplicate cannot erase a structured failure.
+        if (state.results.get(id) !== 'error') state.results.set(id, verdict)
+      } else state.overflow = true
     }
     if (event?.type === 'assistant/message' && event.data.interrupted === true) {
-      addEvidence(sessionId, turn, step, 'interrupted')
-      return null
+      state.evidence.add('interrupted')
     }
     if (event?.type === 'assistant/attempt') {
-      addEvidence(sessionId, turn, step, 'model_attempt')
-      return null
+      state.evidence.add('model_attempt')
     }
     if (event?.type !== 'step/end') return null
-    const id = key(sessionId, turn, step)
-    const evidenceCodes = [...(pending.get(id) ?? [])]
-    pending.delete(id)
+    state.ended = true
+    const evidenceCodes = [...state.evidence]
+    const ids = new Set([...state.calls.keys(), ...state.results.keys()])
+    const terminalError = state.evidence.has('agent_error')
+    const failedIds = [...ids].filter(id => state.results.get(id) === 'error')
+    const outcome = terminalError || failedIds.length > 0 ? 'error'
+      : ids.size > 0 && !state.overflow && !state.evidence.has('interrupted')
+        && [...ids].every(id => state.results.get(id) === 'success') ? 'success' : 'unknown'
+    const relevant = failedIds.length ? failedIds : [...ids]
+    const operations = new Set(relevant.map(id => operationFor({ toolName: state.calls.get(id) })))
+    const operation = !terminalError && !state.overflow && operations.size === 1 ? [...operations][0] : 'unknown'
     const depth = session.header?.delegationDepth
     return {
       sessionId,
@@ -76,6 +111,10 @@ export function createFeatureCollector(roleByPreset = {}) {
       role: inferRole(session.header?.agentPreset, roleByPreset),
       delegationDepth: Number.isSafeInteger(depth) && depth >= 0 ? depth : 0,
       evidenceCodes,
+      outcome,
+      operation,
+      toolNames: [...new Set(state.calls.values())].filter(Boolean).slice(0, 128),
+      toolCount: ids.size,
     }
   }
 
@@ -88,11 +127,7 @@ export function createFeatureCollector(roleByPreset = {}) {
   }
 
   function forgetSession(sessionId) {
-    for (const id of pending.keys()) {
-      if (id.startsWith(JSON.stringify([sessionId]).slice(0, -1) + ',')) {
-        pending.delete(id)
-      }
-    }
+    sessions.delete(sessionId)
   }
 
   return { observeSessionEvent, observeRequestError, observeAgentError, forgetSession }

@@ -1,29 +1,47 @@
 {
   "name": "dsh-step-risk",
-  "version": "0.1.0",
-  "description": "Experimental architecture-aware Bayesian step attribution for DeepSeek Harness",
+  "version": "0.2.0",
+  "description": "Per-step final-failure model estimates with a native DeepSeek Harness panel",
   "type": "module",
   "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "client.js",
     "src",
     "cordis.patch.yml",
+    "scripts/verify-dsh-runtime.cjs",
+    "scripts/dsh-runtime-smoke.mjs",
+    "scripts/verify-client-browser.cjs",
     "README.md",
     "docs"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "verify:dsh": "node scripts/verify-dsh-runtime.cjs",
+    "verify:client": "node scripts/verify-client-browser.cjs"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-session": "0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": { "optional": true }
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": ["@deepseek-ai/dsh-client-ui-renderer"],
+      "platform": "web"
     }
   }
 }

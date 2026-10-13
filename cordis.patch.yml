@@ -2,4 +2,7 @@
     - id: step-risk
       name: dsh-step-risk
       config:
-        logToConsole: true
+        logToConsole: false
+        dataDir: !!js ctx.get('profileContext').dir + '/step-risk'
+        maxSessions: 100
+        maxStepsPerSession: 500

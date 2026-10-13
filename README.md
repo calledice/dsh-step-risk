@@ -1,77 +1,82 @@
 # DSH Step Risk
 
-DeepSeek Harness 的实验性实时步骤归因插件。每个 `step/end` 后输出一个模型估计：**如果当前任务最终失败，且决定性责任步骤属于这个 session，该步骤被认定为责任步骤的模型概率**。同时列出当前 session 内最可疑的历史步骤，并保留尚未发生步骤的概率质量。无需重放，也无需预先知道链路长度。
+DeepSeek Harness **V0.2.0-rc.2** 的步骤风险插件，版本 **0.2.0**。在每个原生 step/end 后计算该步骤引入或遗留的问题最终影响任务失败的模型概率，并在 Harness 右侧栏显示。模型移植自 codex-step-risk 0.4.1 的 step-failure-chain-v1。
 
-> **状态：0.1.0，未校准。** 数值来自明确的先验和证据似然比假设，目前没有 DeepSeek Harness 原生的成功/失败及人工责任标签来验证概率刻度。不要把 `pCurrent` 解读为任务失败率，或用于自动阻断、处罚 agent。
+每步有独立估计，各步百分比无需相加到 100%。数值使用公开设计先验，标记 experimental_uncalibrated。执行成功、错误、未知等观测事实与估计分别展示。DSH 的一个 step 包含一次模型调用及其请求的工具执行。
 
-## 安装
+## 安装到 Windows 桌面版
 
-针对 DeepSeek Harness 0.2.1-alpha.1 的源码事件契约开发；需要 Node.js 22.19+ 或 24+。在已有 `dsh` CLI 的机器上运行：
+使用 Harness 自带的 CLI，不需要另装全局 dsh。在本仓库根目录的 PowerShell 中执行：
 
-```sh
-dsh plugin --profile demo add github:calledice/dsh-step-risk#v0.1.0
-dsh --profile demo --dump-config
-dsh --profile demo
+```powershell
+$dshCli = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+& $dshCli --version
+& $dshCli plugin --profile desktop add (Get-Location).Path
 ```
 
-`--dump-config` 中应出现 `dsh-step-risk` 层和 `step-risk` 行。启动后，插件在每个已结束 step 输出一条 `[dsh-step-risk] { ... }` JSON。也可以从本仓库 checkout 安装：`dsh plugin --profile demo add ./dsh-step-risk`。插件直接提供 ESM 文件，没有安装时构建脚本。
+也可以把最后的路径替换成发行的本地 .tgz。目标版本为 0.2.0-rc.2，插件声明了精确的可选 DSH peer 要求，不需要兼容性豁免，也不会另装一份 Harness。Web CLI 用户把 desktop 换成自己的 profile 名称。
 
-移除：`dsh plugin --profile demo remove dsh-step-risk`。
+安装后打开一个会话，在右侧栏的新标签引导页选择 **Step Risk**；设置页也有 **Step Risk** 历史记录浏览器。若客户端尚未刷新，重新加载页面或退出并重开 Harness。运行一个新任务，已结束步骤会每 2 秒刷新到面板。安装前的历史对话不会补读；重启后可查看插件此前保存的记录。
 
-## 输出
+### 快速检查
 
-关键字段：
+1. 新建一个会话，点击右上角“打开右侧边栏”；若已有侧栏标签，先点击“＋”。
+2. 在新标签引导页选择 **Step Risk**。
+3. 发送 `只回复 STEP_RISK_OK，不要调用任何工具。`
+4. 回复结束后等待约 2 秒。若该步骤没有工具调用，应出现“实际结果：未知”和 **4.5%** 的当前规则估计；“未知”表示没有工具结果可供判定。
 
-| 字段 | 含义 |
-| --- | --- |
-| `sessionId`、`turn`、`step`、`ordinal` | DSH 会话与步骤定位；`ordinal` 是该 session 内观测到的步骤序号 |
-| `role`、`delegationDepth` | 从 agent preset 和委派深度得到的架构特征 |
-| `evidenceCodes` | 当前步骤的有限错误信号；无硬信号时为 `no_hard_signal` |
-| `priorHazard` | 当前步骤在尚未归因于更早步骤时的先验 hazard |
-| `pCurrent` | 当前步骤的归一化归因质量，含更早步骤与未知未来的竞争 |
-| `pCurrentGivenNoEarlier` | 排除已发生步骤后的当前步与未知未来二选一估计 |
-| `pFuture`、`pOtherPast`、`pRetained` | 未知未来、被压缩的历史、保留的历史候选之概率质量；三者和为 1 |
-| `topCandidates` | 当前 session 中保留的 Top-K 候选 |
-| `revision` | 迟到的 `agent/error` 可修订刚完成的步骤 |
-| `calibration`、`scope` | 始终标明 `experimental_uncalibrated` 和条件事件 |
+卸载：
 
-`pCurrent` 是**session 局部**的估计。DSH 的不同 agent 通常拥有不同 session；本版不把多个 agent session 的概率强行归一化为一个全链路排名。用 `sessionId`、`role` 和人工任务上下文关联 agent。子 agent 的 `delegationDepth` 已进入先验。
+```powershell
+& $dshCli plugin --profile desktop remove dsh-step-risk
+```
+
+卸载包不删除记录。默认目录是当前 profile 的 step-risk 子目录，例如 %USERPROFILE%\.dsh\profiles\desktop\step-risk。
+
+## 功能
+
+- 每个 Turn / Step 的概率、观测结果、工具名、agent 角色。
+- 展开查看问题发生、问题持续、最终影响三个条件因素及其假设。
+- 按步骤顺序或估计概率排序；原生标签绑定当前会话，设置页可切换已记录会话。
+- 无工具调用的模型步骤也有估计，结果为未知。请求重试只是历史信号，成功恢复后的步骤不会仅因重试判为失败。
+- 迟到的终止性 agent/error 修订同一个步骤，不重复添加行。
+
+此移植版使用本地规则模型，收集和计算无需 API key、模型调用或网络。Codex 专用 Luna 提供方读取和 AI 评估界面不属于此版本。
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 中覆盖插件行，例如：
+默认保留最近 100 个会话、每会话最近 500 个步骤。在 profile 的 cordis.patch.yml 中覆盖：
 
 ```yaml
 - id: step-risk
   name: dsh-step-risk
   config:
-    logToConsole: true
-    logFile: ./step-risk.jsonl
-    baseHazard: 0.03
-    recoveryHazard: 0.02
-    maxCandidates: 128
-    topK: 3
+    logToConsole: false
+    dataDir: !!js ctx.get('profileContext').dir + '/step-risk'
+    maxSessions: 100
+    maxStepsPerSession: 500
     roleByPreset:
       my-planner: planner
-      my-worker: executor
       my-reviewer: verifier
 ```
 
-`roleByPreset` 优先于名称启发式。可用角色为 `planner`、`executor`、`verifier`、`other`。完整参数、模型公式和限制见 [模型说明](docs/MODEL.md)；产品边界见 [产品与研究约定](docs/PRODUCT_SPEC.md)。
+Harness patch 替换整段 config，覆盖时请保留 dataDir。dataDir: null 只保存在内存。目录应专用于插件；超出保留数量的哈希 JSON 文件会被清理。每个 profile 使用自己的目录，不要让多个进程并发写同一目录。
 
-`logFile` 是可选 JSONL 路径。日志只写 session 标识、步骤序号、角色、证据码及概率，不写 prompt、工具参数、模型回复正文或错误原文。session 标识仍可能关联用户工作，应按本地日志权限管理。插件另发出 Cordis 事件 `step-risk/prediction`，供其他插件订阅。
+可选 logFile 写 JSONL，logToConsole: true 输出结构化日志。step-risk/prediction 事件保留旧归因字段供兼容集成；主指标只使用 stepFailure.value。旧 baseHazard 等参数不会改变新模型百分比。
 
-## 验证
+记录不包含 prompt、工具参数、响应正文、错误原文、凭据或完整对话。会话 ID 和工具名仍属于本地工作元数据。面板接口通过 Harness Connection 通道访问，复用其 Web/桌面身份检查。
 
-```sh
-npm test
-npm pack --dry-run --ignore-scripts
+## 验证与开发
+
+```powershell
+node --test
+node scripts/verify-dsh-runtime.cjs --report docs/validation-dsh-rc2.json
 ```
 
-测试覆盖概率质量、长链路候选压缩、会话隔离、架构先验、事件提取和迟到错误修订。真实 DSH profile 加载仍需在安装了对应版本 CLI 的环境中验证；详见 [验证记录](docs/VALIDATION.md)。
+第二条在 Windows 安装的 Harness 中运行隔离 profile，用真实 Cordis Loader、AgentLoop、Session、工具运行时和 Connection 验证加载、成功/失败/无工具步骤、存储和认证。LLM 是确定性测试适配器，不会使用用户凭据。安装位置不同时传 --electron <exe>。
 
-## 数据与路线
+`node scripts/verify-client-browser.cjs` 另行验证实际 `client.js` 的浏览器渲染、排序和因素、会话隔离、空状态和错误状态、隐藏后停止轮询。该开发检查需要 Playwright/Chromium 和 React/ReactDOM 18.3.1；路径参数和测试依赖安装方式见脚本头注释，插件正常使用无需这些测试依赖。它使用最小槽位测试宿主，不等同于真实 Desktop 界面挂载检查。
 
-内部人工标注数据属于另一套 agent 系统，事件粒度与 DSH step 不相同，也缺少成功轨迹，因此没有直接放入模型训练或公开仓库。试用后应收集 DSH 原生步骤、任务结果和人工责任标签，按任务分组评估 Top-1/Top-3 命中率，再做 Brier 分数与可靠性图；通过校准检验后才可移除未校准标识。
+本机 V0.2.0-rc.2 的实际使用画面见 [原生 Desktop 截图](docs/step-risk-desktop-rc2.png)。另有 [浏览器测试预览](docs/step-risk-preview.png)，后者数据来自确定性测试样例。
 
-MIT License。
+详细边界见 [产品约定](docs/PRODUCT_SPEC.md)、[模型说明](docs/MODEL.md) 和 [验证记录](docs/VALIDATION.md)。MIT License。

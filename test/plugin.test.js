@@ -44,6 +44,9 @@ test('step completion publishes a safe architecture-aware estimate', () => {
   assert.equal(predictions[0].value.delegationDepth, 1)
   assert.deepEqual(predictions[0].value.evidenceCodes, ['tool_error'])
   assert.ok(predictions[0].value.pCurrent > 0)
+  assert.equal(predictions[0].value.outcome, 'error')
+  assert.equal(predictions[0].value.stepFailure.modelVersion, 'step-failure-chain-v1')
+  assert.ok(Math.abs(predictions[0].value.stepFailure.value - 0.135) < 1e-12)
   assert.ok(!JSON.stringify(predictions[0].value).includes('PRIVATE_SECRET'))
 })
 
@@ -67,7 +70,7 @@ test('request-error observer delegates through the Harness waterfall', async () 
   assert.ok(!JSON.stringify(ctx.published[0].value).includes('PRIVATE_SECRET'))
 })
 
-test('sessions are independent and disposal releases state', () => {
+test('sessions are independent and disposal releases tracking state while retaining history', () => {
   const ctx = makeContext()
   apply(ctx, { logToConsole: false })
   const a = { id: 'a', header: { delegationDepth: 0 } }
@@ -80,7 +83,7 @@ test('sessions are independent and disposal releases state', () => {
   assert.equal(values[0].sessionId, 'a')
   assert.equal(values[1].sessionId, 'b')
   assert.equal(values[2].sessionId, 'a')
-  assert.equal(values[2].ordinal, 1)
+  assert.equal(values[2].ordinal, 2)
 })
 
 test('invalid plugin configuration fails during load', () => {
@@ -101,5 +104,19 @@ test('late agent error revises the just-finished step', () => {
   const after = ctx.published[1].value
   assert.equal(after.revision, 1)
   assert.ok(after.pCurrent > before.pCurrent)
+  assert.equal(after.ordinal, before.ordinal)
+  assert.equal(after.outcome, 'error')
+  assert.ok(after.stepFailure.value > before.stepFailure.value)
   assert.ok(!JSON.stringify(after).includes('PRIVATE_SECRET'))
+})
+
+test('duplicate step completion emits only one independent estimate', () => {
+  const ctx = makeContext()
+  apply(ctx, { logToConsole: false })
+  const session = { id: 'once', header: {} }
+  ctx.fire('session/event', session, event('step/end', 1, 1))
+  ctx.fire('session/event', session, event('step/end', 1, 1))
+  assert.equal(ctx.published.length, 1)
+  assert.equal(ctx.published[0].value.outcome, 'unknown')
+  assert.ok(Math.abs(ctx.published[0].value.stepFailure.value - 0.045) < 1e-12)
 })

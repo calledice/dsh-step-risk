@@ -1,0 +1,32 @@
+{
+  "verifiedAt": "2026-10-13T08:30:10.241Z",
+  "dshVersion": "0.2.0-rc.2",
+  "reactVersion": "18.3.1",
+  "reactDomVersion": "18.3.1",
+  "browser": "133.0.6943.16",
+  "mode": "headless-chromium-real-react-dom-minimal-dsh-slot-host-deterministic-api-fixtures",
+  "nativeHarnessRendererMounted": false,
+  "liveProviderRequest": false,
+  "width": 1240,
+  "height": 1000,
+  "sidebarWidth": 420,
+  "clientSha256": "eec5ec18aa1ac1449a6e3f42577424deae1af8023248e3128b2cacaf6b6aadb8",
+  "status": "passed",
+  "checks": [
+    "real-react-dom-renders-three-step-rows-and-decimal-probabilities",
+    "risk-sort-and-conditional-factor-details-and-zero-revision",
+    "420px-sidebar-no-horizontal-overflow-and-screenshot",
+    "session-switch-displays-only-selected-session",
+    "delayed-old-session-response-does-not-overwrite-current-session",
+    "empty-session-state",
+    "read-error-keeps-previous-data-and-shows-visible-alert",
+    "hidden-native-tab-stops-polling-and-show-resumes",
+    "global-settings-selects-and-renders-session",
+    "read-only-get-requests-and-no-browser-javascript-errors"
+  ],
+  "requestCount": 12,
+  "browserErrors": [],
+  "screenshot": "docs/step-risk-preview.png",
+  "reactSource": "npm registry UMD builds matching the official rc.2 source pnpm-lock.yaml pins",
+  "boundary": "Uses the unmodified published client.js and real React/ReactDOM 18.3.1 matching the official rc.2 source lockfile. Slot services and GET data are test fixtures; native DSH frontend navigation and lifecycle are not exercised."
+}
