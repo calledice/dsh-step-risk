@@ -2,7 +2,7 @@
 /** Launch the compatibility smoke under the installed Desktop's Electron Node. */
 const { spawnSync } = require('node:child_process')
 const { existsSync, writeFileSync, mkdirSync } = require('node:fs')
-const { join, resolve, dirname } = require('node:path')
+const { join, resolve, dirname, delimiter } = require('node:path')
 
 function argument(name) {
   const index = process.argv.indexOf(name)
@@ -21,12 +21,23 @@ try {
   const reportPath = argument('--report')
   const syntheticModel = process.argv.includes('--synthetic-model')
   if (!existsSync(executable)) throw new Error(`DeepSeek Harness executable not found: ${executable}`)
+  const bashDir = process.platform === 'win32'
+    ? resolve(argument('--bash-dir') ?? join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin'))
+    : undefined
+  if (bashDir && !existsSync(join(bashDir, 'bash.exe'))) {
+    throw new Error(`Git Bash not found in ${bashDir}; pass --bash-dir <directory>`)
+  }
+  const childEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_TELEMETRY_DISABLED: '1' }
+  if (bashDir) {
+    const pathKey = Object.keys(childEnv).find(key => key.toUpperCase() === 'PATH') ?? 'PATH'
+    childEnv[pathKey] = bashDir + delimiter + (childEnv[pathKey] ?? '')
+  }
   const result = spawnSync(executable, [
     '--expose-internals', join(__dirname, 'dsh-runtime-smoke.mjs'), runtime,
     ...(syntheticModel ? ['--synthetic-model'] : []),
   ], {
     encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_TELEMETRY_DISABLED: '1' },
+    env: childEnv,
   })
   process.stdout.write(result.stdout ?? '')
   process.stderr.write(result.stderr ?? '')

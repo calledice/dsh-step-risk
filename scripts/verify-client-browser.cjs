@@ -111,15 +111,22 @@ async function main() {
       row('fixture-session-a', 3, 0.045, 'unknown', []),
     ],
     'fixture-session-b': [row('fixture-session-b', 1, 0.012, 'success', ['session_b_read'])],
+    'fixture-session-legacy': [
+      row('fixture-session-legacy', 1, 0.012, 'success', ['bash']),
+      row('fixture-session-legacy', 2, 0.012, 'success', ['pwsh']),
+      row('fixture-session-legacy', 3, 0.135, 'error', ['bash']),
+    ],
     'fixture-session-empty': [],
   }
   records['fixture-session-b'][0].turnRisk = {
     status: 'evaluated_model', horizon: 'turn_final_failure', pre: 0.2,
-    post: 0.4, delta: 0.2, modelVersion: 'turn-failure-empirical-v1', support: 24,
+    post: 0.4, delta: 0.2, modelVersion: 'turn-failure-empirical-v2', support: 24,
   }
+  for (const legacyRow of records['fixture-session-legacy'])
+    legacyRow.turnRisk.status = 'legacy_observation'
   const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Step Risk browser verification</title>
 <style>body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;color:#202227;background:#f5f6f8}main{display:grid;grid-template-columns:minmax(0,1fr) 420px;min-height:100vh}aside{border-left:1px solid #ddd;background:white;height:100vh;overflow:hidden}.fixture{padding:36px}button,select{padding:8px;margin:5px;font:inherit}h1{font-size:25px}.note{max-width:550px;line-height:1.8;color:#5c6470}.badge{display:inline-block;padding:6px 10px;border:1px solid #bbc6d3;border-radius:20px;color:#52657a;font-size:12px}code{font-family:Consolas,monospace;font-size:12px}</style>
-<main><div class="fixture"><span class="badge">浏览器验证夹具 · 非 DSH 原生界面截图</span><h1>Step Risk 客户端渲染验证</h1><p class="note">右侧运行实际发布的 client.js，以及与 DeepSeek Harness V0.2.0-rc.2 源码锁定版本一致的 React / ReactDOM 18.3.1。会话与数据均为本地确定性测试样例。</p><div><button id="native">Native slot fixture</button><button id="settings">Settings slot fixture</button></div><label>Fixture session <select id="fixture-session" aria-label="Fixture session"><option>fixture-session-a</option><option>fixture-session-b</option><option>fixture-session-empty</option></select></label><div><button id="hide">Hide panel</button><button id="show">Show panel</button></div><p class="note">检查：概率排序、条件因子、会话隔离、无记录与请求失败状态，以及隐藏页签停止轮询。</p><code>数据来源：确定性 API fixture / 仅监听 127.0.0.1</code></div><aside id="panel"></aside></main>
+<main><div class="fixture"><span class="badge">浏览器验证夹具 · 非 DSH 原生界面截图</span><h1>Step Risk 客户端渲染验证</h1><p class="note">右侧运行实际发布的 client.js，以及与 DeepSeek Harness V0.2.0-rc.2 源码锁定版本一致的 React / ReactDOM 18.3.1。会话与数据均为本地确定性测试样例。</p><div><button id="native">Native slot fixture</button><button id="settings">Settings slot fixture</button></div><label>Fixture session <select id="fixture-session" aria-label="Fixture session"><option>fixture-session-a</option><option>fixture-session-b</option><option>fixture-session-legacy</option><option>fixture-session-empty</option></select></label><div><button id="hide">Hide panel</button><button id="show">Show panel</button></div><p class="note">检查：概率排序、条件因子、会话隔离、旧口径弃权、无记录与请求失败状态，以及隐藏页签停止轮询。</p><code>数据来源：确定性 API fixture / 仅监听 127.0.0.1</code></div><aside id="panel"></aside></main>
 <script src="/react-bundle.js"></script><script>
 const ReactDOMClient=ReactDOM;window.fixtureVersions={react:React.version,reactDom:ReactDOM.version};
 const registered=new Map();const tabs=[];const disposers=[];
@@ -143,14 +150,17 @@ document.getElementById('fixture-session').onchange=event=>{sessionId=event.targ
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       response.setHeader('Cache-Control', 'no-store')
       if (serverState.fail) { response.writeHead(503); response.end(JSON.stringify({ error: 'fixture unavailable' })); return }
-      response.end(JSON.stringify({ schemaVersion: 1, pluginVersion: '0.3.0', calibration: 'experimental_uncalibrated', sessionId,
+      response.end(JSON.stringify({ schemaVersion: 1, pluginVersion: '0.3.1', calibration: 'experimental_uncalibrated', sessionId,
         sessions: Object.keys(records).map(id => ({ sessionId: id, updatedAt: fixedTime, stepCount: records[id].length })),
         steps: records[sessionId] || [], updatedAt: fixedTime,
-        turnRiskModel: { status: sessionId === 'fixture-session-b' ? 'ready' : 'missing_model',
-          modelVersion: sessionId === 'fixture-session-b' ? 'turn-failure-empirical-v1' : null },
+        turnRiskModel: { status: ['fixture-session-b', 'fixture-session-legacy'].includes(sessionId) ? 'ready' : 'missing_model',
+          modelVersion: ['fixture-session-b', 'fixture-session-legacy'].includes(sessionId) ? 'turn-failure-empirical-v2' : null },
         activeTurnForecast: sessionId === 'fixture-session-b'
           ? { turn: 1, step: 2, phase: 'pre', status: 'evaluated_model',
-            horizon: 'turn_final_failure', value: 0.4, modelVersion: 'turn-failure-empirical-v1', support: 24 }
+            horizon: 'turn_final_failure', value: 0.4, modelVersion: 'turn-failure-empirical-v2', support: 24 }
+          : sessionId === 'fixture-session-legacy'
+            ? { turn: 1, step: 2, phase: 'pre', status: 'legacy_observation',
+              horizon: 'turn_final_failure', value: null, modelVersion: null, support: null }
           : null }))
       return
     }
@@ -169,12 +179,14 @@ document.getElementById('fixture-session').onchange=event=>{sessionId=event.targ
     await page.goto(`http://127.0.0.1:${server.address().port}/`)
     await page.getByRole('article').nth(2).waitFor()
     assert.match(await page.getByRole('article').first().innerText(), /1\.2%/)
+    assert.match(await page.getByRole('article').first().innerText(), /工具执行未见错误/)
     assert.equal(await page.getByRole('article').count(), 3)
     checks.push('real-react-dom-renders-three-step-rows-and-decimal-probabilities')
     await page.getByLabel('步骤排序').selectOption('risk')
     assert.match(await page.getByRole('article').first().innerText(), /13\.5%/)
     await page.getByRole('article').first().locator('summary').click()
     const expanded = await page.getByRole('article').first().innerText()
+    assert.match(expanded, /本步出现执行错误信号/)
     assert.match(expanded, /45\.0%.*60\.0%.*50\.0%/s)
     assert.match(expanded, /修订 0/)
     checks.push('risk-sort-and-conditional-factor-details-and-zero-revision')
@@ -193,6 +205,28 @@ document.getElementById('fixture-session').onchange=event=>{sessionId=event.targ
     assert.match(await page.locator('#panel').innerText(), /历史回算可能包含训练期样本/)
     checks.push('session-switch-displays-only-selected-session')
     checks.push('evaluated-turn-forecast-renders-pre-post-and-active-step-without-mixing-step-impact')
+    await page.getByLabel('步骤排序').selectOption('time')
+    await page.getByLabel('Fixture session').selectOption('fixture-session-legacy')
+    await page.getByRole('article').nth(2).waitFor()
+    const legacyCards = page.getByRole('article')
+    assert.equal(await legacyCards.count(), 3)
+    for (const index of [0, 1]) {
+      const card = await legacyCards.nth(index).innerText()
+      assert.match(card, /1\.2%/)
+      assert.match(card, /实际结果：旧口径：工具未标错，命令退出状态未知/)
+      assert.match(card, /该数值沿用旧版步骤观测，未核实命令退出状态，不能据此断言命令成功/)
+    }
+    const legacyError = await legacyCards.nth(2).innerText()
+    assert.match(legacyError, /本步出现执行错误信号/)
+    assert.doesNotMatch(legacyError, /该数值沿用旧版步骤观测/)
+    const legacyPanel = await page.locator('#panel').innerText()
+    assert.match(legacyPanel, /当前模型无法回算/)
+    assert.match(legacyPanel, /执行前预测已弃权/)
+    assert.doesNotMatch(legacyPanel, /需要同源、人工核验/)
+    assert.equal(await page.locator('#panel').evaluate(element => element.scrollWidth <= element.clientWidth), true)
+    checks.push('legacy-bash-pwsh-success-estimate-warning-and-turn-risk-abstention-copy')
+    await page.getByLabel('Fixture session').selectOption('fixture-session-b')
+    await page.getByText('session_b_read', { exact: true }).waitFor()
     serverState.delaySession = 'fixture-session-a'
     await page.getByLabel('Fixture session').selectOption('fixture-session-a')
     await page.getByLabel('Fixture session').selectOption('fixture-session-b')

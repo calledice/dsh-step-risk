@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createStore } from '../src/store.js'
 import { estimateStepFailure } from '../src/step-probability.js'
+import { STEP_OBSERVATION_VERSION } from '../src/features.js'
 
 const filename = id => createHash('sha256').update(id).digest('hex') + '.json'
 const snapshot = (sessionId = 'session-a', step = 1, extra = {}) => {
@@ -26,7 +27,7 @@ const directory = t => {
 test('memory store returns the latest session and immutable allowlisted records', () => {
   const store = createStore({ dataDir: null })
   assert.deepEqual(store.read(), {
-    schemaVersion: 1, pluginVersion: '0.3.0', calibration: 'experimental_uncalibrated',
+    schemaVersion: 1, pluginVersion: '0.3.1', calibration: 'experimental_uncalibrated',
     sessionId: null, sessions: [], steps: [], updatedAt: null,
   })
   const first = snapshot('older', 1, { prompt: 'DO NOT SAVE', toolArgs: { secret: 'token' } })
@@ -73,19 +74,26 @@ test('atomic hashed session files survive restart and cannot follow a path-like 
   assert.equal(readdirSync(dataDir).some(file => file.endsWith('.tmp')), false)
 })
 
-test('existing 0.2.0 records remain readable and are upgraded on the next write', t => {
+test('existing 0.2.0 and 0.3.0 records remain readable and are upgraded on the next write', t => {
   const dataDir = directory(t)
   const original = createStore({ dataDir })
-  original.put(snapshot('legacy', 1))
-  const file = join(dataDir, filename('legacy'))
-  const envelope = JSON.parse(readFileSync(file, 'utf8'))
-  envelope.pluginVersion = '0.2.0'
-  writeFileSync(file, JSON.stringify(envelope))
+  for (const version of ['0.2.0', '0.3.0']) {
+    const id = 'legacy-' + version
+    original.put(snapshot(id, 1))
+    const file = join(dataDir, filename(id))
+    const envelope = JSON.parse(readFileSync(file, 'utf8'))
+    envelope.pluginVersion = version
+    writeFileSync(file, JSON.stringify(envelope))
+  }
   const upgraded = createStore({ dataDir })
-  assert.equal(upgraded.read('legacy').steps.length, 1)
-  upgraded.put(snapshot('legacy', 2))
-  assert.equal(upgraded.read('legacy').steps.length, 2)
-  assert.equal(JSON.parse(readFileSync(file, 'utf8')).pluginVersion, '0.3.0')
+  for (const version of ['0.2.0', '0.3.0']) {
+    const id = 'legacy-' + version
+    assert.equal(upgraded.read(id).steps.length, 1)
+    const newRow = snapshot(id, 2, { observationVersion: STEP_OBSERVATION_VERSION })
+    upgraded.put(newRow)
+    assert.deepEqual(upgraded.read(id).steps, [snapshot(id, 1), newRow])
+    assert.equal(JSON.parse(readFileSync(join(dataDir, filename(id)), 'utf8')).pluginVersion, '0.3.1')
+  }
 })
 
 test('retention bounds sessions on disk and retains the newest step positions', t => {

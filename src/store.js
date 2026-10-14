@@ -3,10 +3,11 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openS
   readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { estimateStepFailure } from './step-probability.js'
+import { STEP_OBSERVATION_VERSION } from './features.js'
 
 const SCHEMA_VERSION = 1
-const PLUGIN_VERSION = '0.3.0'
-const READABLE_PLUGIN_VERSIONS = new Set(['0.2.0', PLUGIN_VERSION])
+const PLUGIN_VERSION = '0.3.1'
+const READABLE_PLUGIN_VERSIONS = new Set(['0.2.0', '0.3.0', PLUGIN_VERSION])
 const CALIBRATION = 'experimental_uncalibrated'
 const FILE_PATTERN = /^[a-f0-9]{64}\.json$/
 const MAX_DIRECTORY_ENTRIES = 4096
@@ -71,6 +72,8 @@ export function normalizeSnapshot(input) {
   if (!ROLES.has(input.role)) invalid('role')
   if (!OUTCOMES.has(input.outcome)) invalid('outcome')
   if (!OPERATIONS.has(input.operation)) invalid('operation')
+  if (input.observationVersion !== undefined
+    && input.observationVersion !== STEP_OBSERVATION_VERSION) invalid('observationVersion')
   const safe = {
     sessionId: sessionIdentity(input.sessionId),
     turn: integer(input.turn, 'turn'),
@@ -85,6 +88,7 @@ export function normalizeSnapshot(input) {
     outcome: input.outcome,
     operation: input.operation,
     evidenceCodes: stringList(input.evidenceCodes, 'evidenceCodes', code => EVIDENCE_CODES.has(code), 32),
+    ...(input.observationVersion === undefined ? {} : { observationVersion: input.observationVersion }),
   }
   safe.stepFailure = safeEstimate(input.stepFailure, safe)
   return safe

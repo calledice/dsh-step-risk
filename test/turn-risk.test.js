@@ -11,11 +11,13 @@ import {
   projectTurnRisk,
   loadTurnRiskModel,
 } from '../src/turn-risk.js'
+import { STEP_OBSERVATION_VERSION } from '../src/features.js'
 
 const baseTime = Date.UTC(2026, 9, 13)
 const timestamp = index => new Date(baseTime + index * 60_000).toISOString()
 const stepRow = (sessionId, turn, step, changes = {}) => ({
   sessionId, turn, step, ordinal: step, revision: 0,
+  observationVersion: STEP_OBSERVATION_VERSION,
   outcome: 'success', operation: 'action', evidenceCodes: [], ...changes,
 })
 
@@ -130,6 +132,10 @@ test('missing or invalid models abstain, including malformed and oversized files
   assert.equal(loadTurnRiskModel(file).status, 'invalid_model')
   writeFileSync(file, JSON.stringify(model))
   assert.equal(loadTurnRiskModel(file).status, 'ready')
+  writeFileSync(file, JSON.stringify({ ...model,
+    modelVersion: 'turn-failure-empirical-v1', featureVersion: 'turn-prefix-structured-v1',
+  }))
+  assert.equal(loadTurnRiskModel(file).status, 'invalid_model')
   truncateSync(file, 300_000)
   assert.equal(loadTurnRiskModel(file).status, 'invalid_model')
 })
@@ -180,4 +186,23 @@ test('retained tails and missing steps abstain instead of losing earlier error h
   const labels = labeledTurns()
   labels[0].steps = [stepRow(labels[0].sessionId, 1, 2)]
   assert.throws(() => trainTurnRiskModel(labels), /incomplete step prefix/)
+})
+
+test('legacy step observations abstain without hiding earlier valid prefixes', () => {
+  const state = readyModel()
+  const first = stepRow('s', 1, 1)
+  const legacy = stepRow('s', 1, 2, { observationVersion: undefined })
+  const third = stepRow('s', 1, 3)
+  assert.equal(predictTurnRisk(state, [first, legacy]).status, 'legacy_observation')
+  assert.equal(predictTurnRisk(state, [first, legacy]).value, null)
+  const projected = projectTurnRisk([first, legacy, third], state)
+  assert.equal(projected[0].turnRisk.status, 'evaluated_model')
+  assert.equal(projected[1].turnRisk.status, 'legacy_observation')
+  assert.equal(projected[1].turnRisk.pre, projected[0].turnRisk.post)
+  assert.equal(projected[1].turnRisk.post, null)
+  assert.equal(projected[2].turnRisk.pre, null)
+  assert.equal(projected[2].turnRisk.post, null)
+  const labels = labeledTurns()
+  labels[0].steps[0].observationVersion = undefined
+  assert.throws(() => trainTurnRiskModel(labels), /legacy step observation/)
 })

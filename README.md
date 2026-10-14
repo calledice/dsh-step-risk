@@ -1,6 +1,6 @@
 # DSH Step Risk
 
-DeepSeek Harness **V0.2.0-rc.2** 的步骤风险插件，版本 **0.3.0**。在每个原生 `step/end` 后展示该步骤引入或遗留的问题最终影响目标的**未校准模型估计**；另可在有人工核验的成败标签与通过留出检验的模型时，展示当前 turn 目标的终局失败风险。界面位于 Harness 右侧栏。步骤模型移植自 codex-step-risk 0.4.1 的 step-failure-chain-v1。
+DeepSeek Harness **V0.2.0-rc.2** 的步骤风险插件，版本 **0.3.1**。在每个原生 `step/end` 后展示该步骤引入或遗留的问题最终影响目标的**未校准模型估计**；另可在有人工核验的成败标签与通过留出检验的模型时，展示当前 turn 目标的终局失败风险。界面位于 Harness 右侧栏。步骤模型移植自 codex-step-risk 0.4.1 的 step-failure-chain-v1。
 
 每步影响事件分别定义且可能重叠，无需相加到 100%。其参数是公开设计先验，标记 `experimental_uncalibrated`；它们不是经验校准或反事实致因概率。本轮终局风险是另一预测目标，缺少可用模型时明确显示“暂无可用概率”，不会用工具错误代替任务失败标签。DSH 的一个 step 包含一次模型调用及其请求的工具执行。
 
@@ -42,9 +42,11 @@ $dshProfile = if (Test-Path $selection) { (Get-Content $selection -Raw | Convert
 - 展开查看问题发生、问题持续、最终影响三个条件因素及其假设。
 - 按步骤顺序或估计概率排序；原生标签绑定当前会话，设置页可切换已记录会话。
 - 无工具调用的模型步骤也有估计，结果为未知。请求重试只是历史信号，成功恢复后的步骤不会仅因重试判为失败。
-- 界面中的“工具未标错”表示 DSH 返回的 `isError` 为 `false`，不能证明用户意图中的操作或目标成功。
+- 界面中的“工具执行未见错误”表示本步工具满足各自的结构化成功判据，不能证明用户意图中的操作或目标成功。其他工具以 `isError=false` 为成功判据；官方前台 `bash`、`pwsh` 还须有完整结构化退出事实且退出码为 0。
 - 迟到的终止性 agent/error 修订同一个步骤，不重复添加行。
 - 同一 turn 的较早步骤若因保留上限被删除，后续风险会标为 `incomplete_prefix` 并返回空值；新 turn 从完整空前缀开始。
+
+对于模型直接调用的官方顶层 `bash`、`pwsh`，插件把同一步的 `tools/result` 与 `tool/result` 按 `callId` 和工具名配对。只有 `kind=foreground`、未超时或取消、没有终止信号或停止标记、没有沙箱拒绝或运行器失败，且 `exitCode` 是安全整数时，退出码 0 才编码为内部 `success`，非 0 编码为内部 `error`。`isError=true` 仍直接编码为 `error`；其余 shell 情况为 `unknown`。PTC 模式下由 `run_code` 嵌套执行的 shell 不适用这条顶层退出码规则，其内部退出码不单独决定整个 step 成败。插件不读取 stdout、stderr 或渲染出的退出码文字来判定结果，也不保存这些正文。
 
 本地规则与可选的经验频率模型均无需 API key、额外模型调用或网络。Codex 专用 Luna 提供方读取和 AI 评估界面不属于此版本。
 
@@ -67,11 +69,11 @@ $dshProfile = if (Test-Path $selection) { (Get-Content $selection -Raw | Convert
 
 Harness patch 替换整段 config，覆盖时请保留 dataDir。dataDir: null 只保存在内存。目录应专用于插件；超出保留数量的哈希 JSON 文件会被清理。每个 profile 使用自己的目录，不要让多个进程并发写同一目录。
 
-可选 `logFile` 写 JSONL，`logToConsole: true` 输出结构化日志。`step-risk/prediction` 保留旧归因字段并附加 `turnRisk` 展示投影；`step-risk/turn-forecast` 在 `step/start` 发出。步骤影响只使用 `stepFailure.value`，旧 `baseHazard` 等参数不会改变它。本地 0.2.0 的已存记录可在 0.3.0 中读取，并在下一次写入该会话时升级外层版本。
+可选 `logFile` 写 JSONL，`logToConsole: true` 输出结构化日志。`step-risk/prediction` 保留旧归因字段并附加 `turnRisk` 展示投影；`step-risk/turn-forecast` 在 `step/start` 发出。步骤影响只使用 `stepFailure.value`，旧 `baseHazard` 等参数不会改变它。0.3.1 的新步骤写入 `observationVersion: structured-shell-exit-v1`。本地 0.2.0/0.3.0 的已存记录仍可读取并展示，下一次写入该会话时升级外层插件版本；旧 shell 行的 `success` 可能仅表示 `isError=false`，客户端会提示退出状态未知及估计值的历史口径。旧步骤不被静默改判，也不会伪造退出码。合格模型遇到含旧步骤的同轮前缀会以 `legacy_observation`、空值弃权。
 
 ### 本轮目标终局风险模型
 
-插件默认尝试从当前 profile 的 `step-risk/turn-risk-model.json` 加载经验模型。可在 Cordis config 中用绝对路径 `turnRiskModelFile` 覆盖；无文件或文件无效时插件照常运行，但 turn 风险保持空值。新模型在插件启动时加载，训练后需重启 Harness。模型文件不会被现有的步骤记录保留清理规则误删。
+插件默认尝试从当前 profile 的 `step-risk/turn-risk-model-v2.json` 加载 `turn-failure-empirical-v2` 经验模型，其特征版本为 `turn-prefix-structured-v2`。可在 Cordis config 中用绝对路径 `turnRiskModelFile` 覆盖；无文件或文件无效（包括旧 v1 模型）时插件照常运行，但 turn 风险保持空值。新模型在插件启动时加载，训练后需重启 Harness。使用新的默认文件名避免旧模型继续被自动加载；模型文件不会被步骤记录保留清理规则误删。
 
 训练标签须由人核验**当前 turn 的用户目标**是否最终达成，不能取自 `turn/end`、工具退出状态或步骤影响值。标签为私有 JSONL，每行例如：
 
@@ -86,12 +88,12 @@ $selection = Join-Path $env:APPDATA 'DSH Desktop\profile-selection\state.json'
 $dshProfile = if (Test-Path $selection) { (Get-Content $selection -Raw | ConvertFrom-Json).active } else { 'desktop' }
 $recordDir = Join-Path $env:USERPROFILE ('.dsh\profiles\' + $dshProfile + '\step-risk')
 $labelFile = Join-Path $env:USERPROFILE 'dsh-turn-outcomes.private.jsonl'
-node scripts/train-turn-risk.mjs --records $recordDir --labels $labelFile --model (Join-Path $recordDir 'turn-risk-model.json') --report (Join-Path $recordDir 'turn-risk-evaluation.json')
+node scripts/train-turn-risk.mjs --records $recordDir --labels $labelFile --model (Join-Path $recordDir 'turn-risk-model-v2.json') --report (Join-Path $recordDir 'turn-risk-evaluation-v2.json')
 ```
 
-训练需要至少 100 个已核验 turn 和 30 个时间留出 turn，并按完整 session 隔离。未通过 Brier、对数损失与 ECE 门槛时不会生成新的合格模型；这些门槛是启用规则，并非概率已校准或跨域准确的保证。请先检查报告的样本量、失败基率及适用数据域，再在真实任务中解释百分比。详细论证见 [故障概率技术设计](docs/FAILURE_PROBABILITY_DESIGN.md)。
+训练需要至少 100 个已核验 turn 和 30 个时间留出 turn，并按完整 session 隔离。标注 turn 若含未带 `structured-shell-exit-v1` 标记的旧步骤，训练器会拒绝它；需要用新版观测重新收集、核验并训练。未通过 Brier、对数损失与 ECE 门槛时不会生成新的合格模型；这些门槛是启用规则，并非概率已校准或跨域准确的保证。请先检查报告的样本量、失败基率及适用数据域，再在真实任务中解释百分比。详细论证见 [故障概率技术设计](docs/FAILURE_PROBABILITY_DESIGN.md)。
 
-重新训练失败时 CLI 保留已有模型，并在报告中用 `existingModelRetained` 明示其可能继续生效；`modelWritten` 表示本次是否写入新模型。若要停用旧模型，请将 `turn-risk-model.json` 移出该目录并重启 Harness。
+重新训练失败时 CLI 保留已有模型，并在报告中用 `existingModelRetained` 明示其可能继续生效；`modelWritten` 表示本次是否写入新模型。若要停用当前 v2 模型，请将 `turn-risk-model-v2.json` 移出该目录并重启 Harness。
 
 步骤记录不包含 prompt、工具参数、响应正文、错误原文、凭据或完整对话。会话 ID 和工具名仍属于本地工作元数据。面板接口通过 Harness Connection 通道访问，复用其 Web/桌面身份检查。
 
@@ -104,10 +106,10 @@ node scripts/verify-dsh-runtime.cjs --synthetic-model --report docs/validation-d
 node scripts/verify-client-browser.cjs
 ```
 
-两条宿主命令在 Windows 安装的 Harness 中运行隔离 profile，用真实 Cordis Loader、AgentLoop、Session、工具运行时和 Connection 验证加载、成功/失败/无工具步骤、存储和认证。前一条验证缺模型时弃权；后一条用合成标签训练的模型验证数值预测链路，不代表真实预测准确率。LLM 是确定性测试适配器，不会使用用户凭据。安装位置不同时传 --electron <exe>。
+两条宿主命令在 Windows 安装的 Harness 中运行隔离 profile，用真实 Cordis Loader、AgentLoop、Session、工具运行时和 Connection 验证加载、普通工具成功/失败、官方前台 Bash 非零退出、无工具步骤、存储和认证。Bash 的结构化退出码为 3，宿主 `isError=false`，插件将本步记为内部 `error`；stdout/stderr 不进入步骤记录、存储或接口响应。前一条验证缺模型时弃权；后一条用合成标签训练的模型验证数值预测链路，不代表真实预测准确率。LLM 是确定性测试适配器，不会使用用户凭据。安装位置不同时传 `--electron <exe>`；Windows 未在默认位置安装 Git Bash 时传 `--bash-dir <目录>`，脚本只调整烟测子进程的 PATH。
 
 `node scripts/verify-client-browser.cjs` 另行验证实际 `client.js` 的浏览器渲染、排序和因素、会话隔离、空状态和错误状态、隐藏后停止轮询。该开发检查需要 Playwright/Chromium 和 React/ReactDOM 18.3.1；路径参数和测试依赖安装方式见脚本头注释，插件正常使用无需这些测试依赖。它使用最小槽位测试宿主，不等同于真实 Desktop 界面挂载检查。
 
-前版 0.2.0 在本机 V0.2.0-rc.2 的实际使用画面见 [原生 Desktop 截图](docs/step-risk-desktop-rc2.png)。新版 0.3.0 的 [浏览器测试预览](docs/step-risk-preview.png) 使用确定性测试样例。
+前版 0.2.0 在本机 V0.2.0-rc.2 的实际使用画面见 [原生 Desktop 截图](docs/step-risk-desktop-rc2.png)。0.3.1 的 [浏览器测试预览](docs/step-risk-preview.png) 使用确定性测试样例；客户端行为见当前浏览器验证记录。
 
 详细边界见 [产品约定](docs/PRODUCT_SPEC.md)、[模型说明](docs/MODEL.md) 和 [验证记录](docs/VALIDATION.md)。MIT License。

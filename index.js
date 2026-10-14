@@ -29,7 +29,7 @@ export function normalizePluginConfig(raw = {}) {
   validateRoleMap(roleByPreset)
   if (dataDir !== null && (typeof dataDir !== 'string' || !isAbsolute(dataDir) || dataDir.includes('\0')))
     throw new TypeError('dataDir must be null or an absolute path')
-  const turnRiskModelFile = raw.turnRiskModelFile ?? (dataDir === null ? null : join(dataDir, 'turn-risk-model.json'))
+  const turnRiskModelFile = raw.turnRiskModelFile ?? (dataDir === null ? null : join(dataDir, 'turn-risk-model-v2.json'))
   if (turnRiskModelFile !== null && (typeof turnRiskModelFile !== 'string'
     || !isAbsolute(turnRiskModelFile) || turnRiskModelFile.includes('\0')))
     throw new TypeError('turnRiskModelFile must be null or an absolute path')
@@ -170,6 +170,11 @@ export function apply(ctx, rawConfig = {}) {
     } catch (error) {
       reportInternalFailure('session observation', error)
     }
+  })
+
+  ctx.on('tools/result', (exec, result) => {
+    try { collector.observeToolResult(exec, result) }
+    catch (error) { reportInternalFailure('tool result observation', error) }
   })
 
   // This is a Harness waterfall event. Passing through next() is mandatory.

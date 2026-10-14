@@ -31,6 +31,65 @@ test('error operation comes from errored calls, not successful neighboring actio
   assert.equal(observe([call('a', 'read'), result('a', true), call('b', 'write'), result('b', true)]).operation, 'unknown')
 })
 
+test('matching foreground bash and pwsh exit codes determine command outcome', () => {
+  for (const name of ['bash', 'pwsh']) {
+    for (const [exitCode, expected] of [[0, 'success'], [7, 'error']]) {
+      const collector = createFeatureCollector()
+      collector.observeSessionEvent(session, call('shell', name))
+      collector.observeToolResult({ callId: 'shell', name, agent: { session } }, {
+        isError: false,
+        value: { kind: 'foreground', exitCode, signal: null, timedOut: false, aborted: false,
+          stdout: { text: 'PRIVATE_STDOUT', truncated: false },
+          stderr: { text: 'PRIVATE_STDERR', truncated: false } },
+      })
+      collector.observeSessionEvent(session, result('shell', false))
+      const observed = collector.observeSessionEvent(session, event('step/end'))
+      assert.equal(observed.outcome, expected)
+      assert.equal(observed.operation, 'unknown')
+      assert.equal(observed.evidenceCodes.includes('tool_error'), exitCode !== 0)
+      assert.ok(!JSON.stringify(observed).includes('PRIVATE_'))
+    }
+  }
+})
+
+test('shell results without a matched completed status remain unknown', () => {
+  const cases = [
+    null,
+    { isError: false, value: '[Command finished with exit code 7]' },
+    { isError: false, value: { kind: 'background', jobId: 'job' } },
+    { isError: false, value: { kind: 'foreground', exitCode: 0,
+      signal: null, timedOut: true, aborted: false } },
+    { isError: false, value: { kind: 'foreground', exitCode: null,
+      signal: 'SIGTERM', timedOut: false, aborted: false } },
+  ]
+  for (const executionResult of cases) {
+    const collector = createFeatureCollector()
+    collector.observeSessionEvent(session, call('shell', 'bash'))
+    if (executionResult) collector.observeToolResult({ callId: 'shell', name: 'bash', agent: { session } }, executionResult)
+    collector.observeSessionEvent(session, event('tool/result', {
+      message: { source: { callId: 'shell' }, isError: false,
+        content: [{ type: 'text', text: 'PRIVATE_RESPONSE\n[exit code: 7]' }] },
+    }))
+    assert.equal(collector.observeSessionEvent(session, event('step/end')).outcome, 'unknown')
+  }
+})
+
+test('unmatched sessions and nested shell executions cannot override a root call', () => {
+  for (const exec of [
+    { callId: 'shell', name: 'bash', agent: { session: { id: 'other' } } },
+    { callId: 'shell', name: 'bash', agent: { session }, parent: Symbol('transport') },
+    { callId: 'different', name: 'bash', agent: { session } },
+  ]) {
+    const collector = createFeatureCollector()
+    collector.observeSessionEvent(session, call('shell', 'bash'))
+    collector.observeToolResult(exec, { isError: false, value: {
+      kind: 'foreground', exitCode: 7, signal: null, timedOut: false, aborted: false,
+    } })
+    collector.observeSessionEvent(session, result('shell', false))
+    assert.equal(collector.observeSessionEvent(session, event('step/end')).outcome, 'unknown')
+  }
+})
+
 test('missing or unpaired result, missing verdict, and model-only completion remain unknown', () => {
   for (const events of [[], [call('a', 'read')], [call('a', 'read'), result('a')],
     [call('a', 'read'), result('a', false), call('b', 'write')],

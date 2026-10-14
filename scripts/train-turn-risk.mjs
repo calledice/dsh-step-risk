@@ -6,6 +6,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createStore } from '../src/store.js'
+import { STEP_OBSERVATION_VERSION } from '../src/features.js'
 import { loadTurnRiskModel, normalizeCompletedAt, trainTurnRiskModel } from '../src/turn-risk.js'
 
 const MAX_LABEL_BYTES = 16 * 1024 * 1024
@@ -233,6 +234,9 @@ function matchRecords(recordsPath, labels) {
     }
     const steps = sessionSteps.get(label.sessionId).filter(row => row.turn === label.turn)
     if (steps.length === 0) throw new InputError('missing_records')
+    if (steps.some(row => row.observationVersion !== STEP_OBSERVATION_VERSION)) {
+      throw new InputError('legacy_observations')
+    }
     if (steps.some(row => Date.parse(row.observedAt) > Date.parse(label.completedAt))) {
       throw new InputError('invalid_labels')
     }

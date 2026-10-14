@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createStore } from '../src/store.js'
+import { STEP_OBSERVATION_VERSION } from '../src/features.js'
 import { estimateStepFailure } from '../src/step-probability.js'
 import { loadTurnRiskModel } from '../src/turn-risk.js'
 
@@ -20,7 +21,7 @@ function fixture(t, count = 1, outcomeOf = index => index % 2 ? 'failure' : 'suc
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const records = join(root, 'records')
   const labels = join(root, 'private-labels.jsonl')
-  const model = join(root, 'turn-risk-model.json')
+  const model = join(root, 'turn-risk-model-v2.json')
   const report = join(root, 'aggregate-report.json')
   const store = createStore({ dataDir: records, maxSessions: 1000 })
   const lines = []
@@ -29,6 +30,7 @@ function fixture(t, count = 1, outcomeOf = index => index % 2 ? 'failure' : 'suc
     const outcome = outcomeOf(index)
     const observation = {
       sessionId, turn: 1, step: 1, ordinal: 1, revision: 0,
+      observationVersion: STEP_OBSERVATION_VERSION,
       observedAt: timestamp(index), role: 'executor', delegationDepth: 0,
       toolNames: ['write_file'], toolCount: 1,
       outcome: outcome === 'failure' ? 'error' : 'success',
@@ -103,6 +105,19 @@ test('CLI reports missing, conflicting, and incomplete private labels without pr
   }
 })
 
+test('CLI rejects legacy step observations after the shell outcome contract changes', t => {
+  const f = fixture(t, 120)
+  const file = join(f.records, recordName('private-session-0'))
+  const envelope = JSON.parse(readFileSync(file, 'utf8'))
+  delete envelope.steps[0].observationVersion
+  writeFileSync(file, JSON.stringify(envelope))
+  const { child, parsed } = run(f)
+  assert.equal(child.status, 1)
+  assert.equal(parsed.modelWritten, false)
+  assert.ok(parsed.reasons.includes('legacy_observations'), JSON.stringify(parsed))
+  assert.throws(() => readFileSync(f.model, 'utf8'), /ENOENT/)
+})
+
 test('CLI with no success class keeps the trained model unavailable', t => {
   const f = fixture(t, 120, () => 'failure')
   const { child, parsed } = run(f)
@@ -126,7 +141,7 @@ test('CLI rejects output paths that collide with private input', t => {
 
 test('CLI permits named model and report files beside records as shown in the README', t => {
   const f = fixture(t, 120)
-  f.model = join(f.records, 'turn-risk-model.json')
+  f.model = join(f.records, 'turn-risk-model-v2.json')
   f.report = join(f.records, 'turn-risk-evaluation.json')
   const { child, parsed } = run(f)
   assert.equal(child.status, 0, child.stderr)

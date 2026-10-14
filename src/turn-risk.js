@@ -1,8 +1,9 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
+import { STEP_OBSERVATION_VERSION } from './features.js'
 
-export const TURN_RISK_MODEL_VERSION = 'turn-failure-empirical-v1'
-export const TURN_RISK_FEATURE_VERSION = 'turn-prefix-structured-v1'
+export const TURN_RISK_MODEL_VERSION = 'turn-failure-empirical-v2'
+export const TURN_RISK_FEATURE_VERSION = 'turn-prefix-structured-v2'
 
 const HORIZON = 'turn_final_failure'
 const MODEL_SCHEMA_VERSION = 1
@@ -51,6 +52,7 @@ function stepFact(row) {
     sessionId: row.sessionId, turn: row.turn, step: row.step, revision,
     outcome: row.outcome, operation: row.operation,
     requestError: row.evidenceCodes.includes('request_error'),
+    legacyObservation: row.observationVersion !== STEP_OBSERVATION_VERSION,
   }
 }
 
@@ -131,6 +133,7 @@ function normalizedTurn(raw) {
     throw new TypeError('labeled turn and structured steps disagree')
   }
   if (!hasCompletePrefix(steps)) throw new TypeError('labeled turn has an incomplete step prefix')
+  if (steps.some(step => step.legacyObservation)) throw new TypeError('labeled turn has a legacy step observation')
   return {
     sessionId: raw.sessionId, turn: raw.turn, outcome: raw.outcome,
     completedAtMs: Date.parse(completedAt), steps,
@@ -480,6 +483,7 @@ export function predictTurnRisk(modelState, prefixRows, expectedNextStep = null)
   if (!availability.model) return unavailableRisk(availability.status)
   const steps = latestSteps(prefixRows)
   if (!hasCompletePrefix(steps, expectedNextStep)) return unavailableRisk('incomplete_prefix')
+  if (steps.some(step => step.legacyObservation)) return unavailableRisk('legacy_observation')
   return predictionFromSummary(availability, summariesForSteps(steps).at(-1))
 }
 
@@ -517,12 +521,17 @@ export function projectTurnRisk(steps, modelState) {
     }
     const summaries = summariesForSteps(facts)
     const byStep = new Map()
+    let legacyObserved = false
     for (let index = 0; index < facts.length; index += 1) {
-      const pre = predictionFromSummary(availability, summaries[index])
-      const post = predictionFromSummary(availability, summaries[index + 1])
+      const pre = legacyObserved ? unavailableRisk('legacy_observation')
+        : predictionFromSummary(availability, summaries[index])
+      legacyObserved ||= facts[index].legacyObservation
+      const post = legacyObserved ? unavailableRisk('legacy_observation')
+        : predictionFromSummary(availability, summaries[index + 1])
       byStep.set(facts[index].step, {
         status: post.status, horizon: HORIZON, pre: pre.value, post: post.value,
-        delta: post.value - pre.value, modelVersion: post.modelVersion,
+        delta: pre.value === null || post.value === null ? null : post.value - pre.value,
+        modelVersion: post.modelVersion,
         support: post.support, projection: 'retrospective_current_model',
       })
     }

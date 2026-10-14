@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../index.js'
 import { trainTurnRiskModel } from '../src/turn-risk.js'
+import { STEP_OBSERVATION_VERSION } from '../src/features.js'
 
 function makeContext() {
   const handlers = new Map()
@@ -50,6 +51,7 @@ function evaluatedModelFile(t) {
       sessionId, turn: 1, outcome: failure ? 'failure' : 'success',
       completedAt: new Date(Date.UTC(2026, 9, 13) + index * 60_000).toISOString(),
       steps: [{ sessionId, turn: 1, step: 1, revision: 0,
+        observationVersion: STEP_OBSERVATION_VERSION,
         outcome: failure ? 'error' : 'success', operation: failure ? 'action' : 'read',
         evidenceCodes: failure ? ['tool_error'] : [] }],
     }
@@ -84,6 +86,33 @@ test('step completion publishes a safe architecture-aware estimate', () => {
   assert.equal(predictions[0].value.stepFailure.modelVersion, 'step-failure-chain-v1')
   assert.ok(Math.abs(predictions[0].value.stepFailure.value - 0.135) < 1e-12)
   assert.ok(!JSON.stringify(predictions[0].value).includes('PRIVATE_SECRET'))
+})
+
+test('a foreground bash nonzero exit is an observed step error despite isError=false', () => {
+  const ctx = makeContext()
+  apply(ctx)
+  const session = { id: 'shell-session', header: {} }
+  ctx.fire('session/event', session, event('step/start', 1, 1))
+  ctx.fire('session/event', session, event('tool/call', 1, 1, {
+    callId: 'bash-call', name: 'bash', arguments: '{"command":"exit 9"}',
+  }))
+  ctx.fire('tools/result', { callId: 'bash-call', name: 'bash', agent: { session } }, {
+    isError: false,
+    value: { kind: 'foreground', exitCode: 9, signal: null, timedOut: false, aborted: false,
+      stdout: { text: 'PRIVATE_STDOUT', truncated: false },
+      stderr: { text: 'PRIVATE_STDERR', truncated: false } },
+    content: [{ type: 'text', text: 'PRIVATE_STDOUT\n[exit code: 9]' }],
+  })
+  ctx.fire('session/event', session, event('tool/result', 1, 1, {
+    message: { source: { callId: 'bash-call' }, isError: false,
+      content: [{ type: 'text', text: 'PRIVATE_STDOUT\n[exit code: 9]' }] },
+  }))
+  ctx.fire('session/event', session, event('step/end', 1, 1))
+  const snapshot = ctx.published.find(item => item.name === 'step-risk/prediction').value
+  assert.equal(snapshot.outcome, 'error')
+  assert.equal(snapshot.operation, 'unknown')
+  assert.equal(snapshot.stepFailure.value, 0.135)
+  assert.ok(!JSON.stringify(snapshot).includes('PRIVATE_'))
 })
 
 test('request-error observer delegates through the Harness waterfall', async () => {

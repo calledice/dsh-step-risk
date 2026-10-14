@@ -23,9 +23,11 @@ const profileDir = join(process.env.DSH_HOME, 'profiles', 'step-risk-smoke')
 const installedPlugin = join(profileDir, 'node_modules', 'dsh-step-risk')
 const dataDir = join(profileDir, 'step-risk')
 const privateMarker = 'fixture-private-prompt-and-output-must-not-be-retained'
+const bashOutputMarker = 'fixture-private-bash-output-must-not-be-retained'
 const snapshots = []
 const forecasts = []
 const eventKinds = []
+const bashExecutionFacts = []
 let application
 let syntheticTraining = null
 
@@ -39,9 +41,8 @@ function textResponse(text) {
   ]
 }
 
-function toolResponse(id, fail) {
-  const name = 'runtime_probe'
-  const args = JSON.stringify({ fail, marker: privateMarker })
+function toolResponse(id, name, parameters) {
+  const args = JSON.stringify(parameters)
   return [
     { type: 'block-start', index: 0, blockType: 'tool-call' },
     { type: 'tool-call-delta', index: 0, id, name, argumentsDelta: args },
@@ -68,6 +69,7 @@ try {
   }
   if (syntheticModel) {
     const { trainTurnRiskModel } = await import(pathToFileURL(join(installedPlugin, 'src', 'turn-risk.js')).href)
+    const { STEP_OBSERVATION_VERSION } = await import(pathToFileURL(join(installedPlugin, 'src', 'features.js')).href)
     const labeled = Array.from({ length: 120 }, (_, index) => {
       const sessionId = 'synthetic-session-' + index
       const failure = index % 2 === 1
@@ -75,6 +77,7 @@ try {
         sessionId, turn: 1, outcome: failure ? 'failure' : 'success',
         completedAt: new Date(Date.UTC(2026, 9, 13) + index * 60_000).toISOString(),
         steps: [{ sessionId, turn: 1, step: 1, revision: 0,
+          observationVersion: STEP_OBSERVATION_VERSION,
           outcome: failure ? 'error' : 'success', operation: 'unknown',
           evidenceCodes: failure ? ['tool_error'] : [] }],
       }
@@ -82,7 +85,7 @@ try {
     syntheticTraining = trainTurnRiskModel(labeled)
     assert.equal(syntheticTraining.eligible, true, JSON.stringify(syntheticTraining.report))
     mkdirSync(dataDir, { recursive: true })
-    writeFileSync(join(dataDir, 'turn-risk-model.json'), JSON.stringify(syntheticTraining.model) + '\n')
+    writeFileSync(join(dataDir, 'turn-risk-model-v2.json'), JSON.stringify(syntheticTraining.model) + '\n')
   }
   writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
     name: 'dsh-profile-step-risk-smoke', private: true,
@@ -95,6 +98,10 @@ try {
     ['session-projections', '@deepseek-ai/dsh-session-projection'],
     ['system-prompt', '@deepseek-ai/dsh-system-prompt', { includeHarnessIdentity: false, includeRuntimeContext: false }],
     ['tools', '@deepseek-ai/dsh-tools', { mode: 'native' }],
+    ['subprocess', '@deepseek-ai/dsh-subprocess-local'],
+    ['shell-env', '@deepseek-ai/dsh-shell-env'],
+    ['bash-executor', '@deepseek-ai/dsh-bash-local'],
+    ['tool-bash', '@deepseek-ai/dsh-tool-bash', { enableRunInBackground: false, promoteOnTimeout: false }],
     ['agents', '@deepseek-ai/dsh-agent'],
     ['agent-loop', '@deepseek-ai/dsh-agent-loop', { agents: [] }],
     ['webserver', '@deepseek-ai/dsh-host-webserver', { host: '127.0.0.1', port: 0 }],
@@ -119,6 +126,15 @@ try {
   ctx.on('step-risk/prediction', snapshot => { snapshots.push(snapshot) })
   ctx.on('step-risk/turn-forecast', forecast => { forecasts.push(forecast) })
   ctx.on('session/event', (_session, event) => { eventKinds.push(event.type) })
+  ctx.on('tools/result', (exec, result) => {
+    if (exec?.name !== 'bash' || exec?.callId !== 'smoke-bash-nonzero-call') return
+    bashExecutionFacts.push({
+      exitCode: result?.value?.exitCode,
+      isError: result?.isError,
+      stdoutContainsMarker: result?.value?.stdout?.text?.includes(bashOutputMarker) === true,
+      stderrContainsMarker: result?.value?.stderr?.text?.includes(bashOutputMarker) === true,
+    })
+  })
   const { LlmAdapter, createUserMessage } = await importRuntime('@deepseek-ai/dsh-llm')
   const { SessionId } = await importRuntime('@deepseek-ai/dsh-session')
   const { defineContentToolFixture } = await importRuntime('@deepseek-ai/dsh-tools')
@@ -133,8 +149,12 @@ try {
     }
   }
   const adapter = new DeterministicAdapter([
-    toolResponse('smoke-success-call', false),
-    toolResponse('smoke-error-call', true),
+    toolResponse('smoke-success-call', 'runtime_probe', { fail: false, marker: privateMarker }),
+    toolResponse('smoke-error-call', 'runtime_probe', { fail: true, marker: privateMarker }),
+    toolResponse('smoke-bash-nonzero-call', 'bash', {
+      command: `echo '${bashOutputMarker}'; echo '${bashOutputMarker}' >&2; exit 3`,
+      description: 'Check Bash exit status and both output streams',
+    }),
     textResponse('smoke complete'),
   ])
   ctx.get('llm').registerAdapter(['step-risk-smoke'], adapter)
@@ -154,11 +174,24 @@ try {
   agent.followup(createUserMessage({ content: [{ type: 'text', text: privateMarker }], source: { kind: 'user' } }))
   await agent.whenIdle()
   await ctx.get('sessions').flush(agent.session)
-  assert.equal(adapter.calls, 3, 'Agent must consume all three model steps')
+  assert.equal(adapter.calls, 4, 'Agent must consume all four model steps')
   assert.equal(toolExecutions, 2, 'Real tool runtime must execute both success and failure')
   assert.ok(eventKinds.includes('step/end') && eventKinds.includes('tool/result'))
-  assert.equal(snapshots.length, 3, 'Each real Agent step must produce one risk prediction')
-  assert.equal(forecasts.length, 3, 'Each real Agent step must expose one pre-step turn forecast')
+  assert.equal(snapshots.length, 4, 'Each real Agent step must produce one risk prediction')
+  assert.equal(forecasts.length, 4, 'Each real Agent step must expose one pre-step turn forecast')
+  assert.deepEqual(bashExecutionFacts, [{
+    exitCode: 3, isError: false, stdoutContainsMarker: true, stderrContainsMarker: true,
+  }], 'The official Bash executor must return the real exit code and both streams')
+  const bashResult = agent.session.snapshotEvents().find(event => event.type === 'tool/result'
+    && event.data.message.source?.callId === 'smoke-bash-nonzero-call')
+  assert.ok(bashResult, 'The official Bash tool must produce a native tool/result event')
+  assert.equal(bashResult.data.message.isError, false,
+    'A nonzero Bash exit must remain a non-error tool result in rc.2')
+  const bashResultText = bashResult.data.message.content
+    .filter(block => block.type === 'text').map(block => block.text).join('')
+  assert.ok(bashResultText.includes(bashOutputMarker) && bashResultText.includes('[stderr]')
+    && bashResultText.includes('[exit code: 3]'),
+    'The real Bash result must contain both output streams and its nonzero exit marker')
   const expectedTurnRiskStatus = syntheticModel ? 'evaluated_model' : 'missing_model'
   assert.ok(forecasts.every(item => item.horizon === 'turn_final_failure'
     && item.status === expectedTurnRiskStatus
@@ -171,18 +204,23 @@ try {
     assert.equal(forecasts[0].value, snapshots[0].turnRisk.pre)
     assert.equal(forecasts[1].value, snapshots[0].turnRisk.post)
     assert.equal(forecasts[2].value, snapshots[1].turnRisk.post)
+    assert.equal(forecasts[3].value, snapshots[2].turnRisk.post)
     assert.ok(snapshots[0].turnRisk.post < snapshots[0].turnRisk.pre,
       'An observed successful step must lower the synthetic model forecast')
     assert.ok(snapshots[1].turnRisk.post > snapshots[1].turnRisk.pre,
       'An observed error must raise the synthetic model forecast')
   }
-  assert.equal(JSON.stringify(snapshots).includes(privateMarker), false, 'Risk output must not retain task content')
-  assert.ok(snapshots.some(snapshot => JSON.stringify(snapshot).includes('tool_error')))
+  const serializedSnapshots = JSON.stringify(snapshots)
+  assert.equal(serializedSnapshots.includes(privateMarker), false, 'Risk output must not retain task content')
+  assert.equal(serializedSnapshots.includes(bashOutputMarker), false, 'Risk output must not retain Bash output')
+  assert.ok(snapshots[2].evidenceCodes.includes('tool_error'),
+    'A nonzero Bash exit must become structured tool-error evidence')
+  assert.equal(snapshots[2].operation, 'unknown', 'The Bash command alone does not identify an operation class')
 
   const hasStepFailure = snapshots.every(snapshot => snapshot.stepFailure && typeof snapshot.stepFailure.value === 'number')
   assert.ok(hasStepFailure, 'Every real step must carry the independent stepFailure estimate')
-  assert.deepEqual(snapshots.map(item => item.outcome), ['success', 'error', 'unknown'])
-  const expectedValues = [0.012, 0.135, 0.045]
+  assert.deepEqual(snapshots.map(item => item.outcome), ['success', 'error', 'error', 'unknown'])
+  const expectedValues = [0.012, 0.135, 0.135, 0.045]
   snapshots.forEach((snapshot, index) => {
     assert.ok(Math.abs(snapshot.stepFailure.value - expectedValues[index]) < 1e-12,
       'Successful, failed, and unknown steps must retain their declared model estimates')
@@ -193,9 +231,10 @@ try {
   assert.ok(persistedFiles.length > 0, 'Bundle default must persist records in the isolated profile')
   const persisted = storedJson.map(file => readFileSync(file, 'utf8')).join('\n')
   assert.equal(persisted.includes(privateMarker), false, 'Risk persistence must not retain task content')
+  assert.equal(persisted.includes(bashOutputMarker), false, 'Risk persistence must not retain Bash output')
   const { createStore } = await import(pathToFileURL(join(installedPlugin, 'src', 'store.js')).href)
   const reloaded = createStore({ dataDir }).read(agent.session.id)
-  assert.equal(reloaded.steps.length, 3, 'A fresh store must recover all three durable steps')
+  assert.equal(reloaded.steps.length, 4, 'A fresh store must recover all four durable steps')
   assert.deepEqual(reloaded.steps.map(item => item.stepFailure.value), snapshots.map(item => item.stepFailure.value))
   const webServer = ctx.get('webServer')
   const connection = ctx.get('connection')
@@ -241,6 +280,7 @@ try {
       : row.turnRisk.pre === null && row.turnRisk.post === null && row.turnRisk.delta === null)
     && row.turnRisk.projection === 'retrospective_current_model'))
   assert.equal(routeBody.includes(privateMarker), false, 'Native GET must not return raw task/output data')
+  assert.equal(routeBody.includes(bashOutputMarker), false, 'Native GET must not return raw Bash output')
   const invalidQuery = await fetch(routeUrl + '?unexpected=1', { headers: { Cookie: cookie } })
   assert.equal(invalidQuery.status, 400)
   const mutation = await fetch(routeUrl, { method: 'POST', headers: { Cookie: cookie } })
@@ -253,7 +293,10 @@ try {
     syntheticTrainingTurns: syntheticTraining?.report.trainingTurns ?? null,
     syntheticHoldoutTurns: syntheticTraining?.report.holdoutTurns ?? null,
     profileInstallation: 'isolated-copy-of-package-files',
-    loader: true, realAgentLoop: true, realSessionEvents: true, realToolExecutions: toolExecutions,
+    loader: true, realAgentLoop: true, realSessionEvents: true,
+    realToolExecutions: toolExecutions + bashExecutionFacts.length,
+    nativeBashNonzeroExit: bashExecutionFacts[0].exitCode,
+    nativeBashResultIsError: bashExecutionFacts[0].isError,
     completedSteps: snapshots.length, modelCalls: adapter.calls, stepFailure: hasStepFailure,
     preStepForecasts: forecasts.length, numericForecasts: forecasts.filter(item =>
       Number.isFinite(item.value)).length, turnRiskStatus: routeData.turnRiskModel.status,

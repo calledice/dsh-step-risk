@@ -1,6 +1,8 @@
 import { operationFor } from './step-probability.js'
 
 const VALID_ROLES = new Set(['planner', 'executor', 'verifier', 'other'])
+const SHELL_TOOLS = new Set(['bash', 'pwsh'])
+export const STEP_OBSERVATION_VERSION = 'structured-shell-exit-v1'
 
 export function inferRole(agentPreset, roleByPreset = {}) {
   if (typeof agentPreset !== 'string' || agentPreset.length === 0) return 'other'
@@ -50,7 +52,7 @@ export function createFeatureCollector(roleByPreset = {}) {
       if (comparison < 0 || (comparison === 0 && state.ended)) return null
       if (comparison === 0) return state
     }
-    state = { turn, step, evidence: new Set(), calls: new Map(), results: new Map(),
+    state = { turn, step, evidence: new Set(), calls: new Map(), results: new Map(), shellResults: new Map(),
       ended: false, overflow: false, unpairedResult: false }
     sessions.delete(sessionId)
     sessions.set(sessionId, state)
@@ -60,6 +62,26 @@ export function createFeatureCollector(roleByPreset = {}) {
 
   function addEvidence(sessionId, turn, step, code) {
     stateFor(sessionId, turn, step)?.evidence.add(code)
+  }
+
+  function observeToolResult(exec, result) {
+    const sessionId = exec?.agent?.session?.id
+    const state = sessions.get(sessionId)
+    const callId = exec?.callId
+    if (!state || state.ended || exec?.parent !== undefined
+      || typeof callId !== 'string' || callId.length > 512) return
+    const name = state.calls.get(callId)
+    if (!SHELL_TOOLS.has(name) || exec.name !== name || result?.isError !== false) return
+    const value = result.value
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.kind !== 'foreground') return
+    let verdict = 'unknown'
+    if (value.timedOut === false && value.aborted === false && value.signal === null
+      && value.stopped === undefined && value.sandbox?.denied !== true
+      && value.sandbox?.runnerFailed !== true && Number.isSafeInteger(value.exitCode)) {
+      verdict = value.exitCode === 0 ? 'success' : 'error'
+    }
+    state.shellResults.set(callId, verdict)
   }
 
   function observeSessionEvent(session, event) {
@@ -80,7 +102,11 @@ export function createFeatureCollector(roleByPreset = {}) {
       if (typeof rawId !== 'string' || rawId.length > 512) state.unpairedResult = true
       const id = typeof rawId === 'string' && rawId.length <= 512 ? rawId
         : 'unpaired:' + (Number.isSafeInteger(event.seq) ? event.seq : state.results.size)
-      const verdict = message?.isError === true ? 'error' : message?.isError === false ? 'success' : 'unknown'
+      const name = state.calls.get(id)
+      const verdict = message?.isError === true ? 'error'
+        : message?.isError === false
+          ? SHELL_TOOLS.has(name) ? state.shellResults.get(id) ?? 'unknown' : 'success'
+          : 'unknown'
       if (verdict === 'error') state.evidence.add('tool_error')
       if (state.results.size < 1024 || state.results.has(id)) {
         // A contradictory duplicate cannot erase a structured failure.
@@ -111,6 +137,7 @@ export function createFeatureCollector(roleByPreset = {}) {
       sessionId,
       turn,
       step,
+      observationVersion: STEP_OBSERVATION_VERSION,
       role: inferRole(session.header?.agentPreset, roleByPreset),
       delegationDepth: Number.isSafeInteger(depth) && depth >= 0 ? depth : 0,
       evidenceCodes,
@@ -133,5 +160,5 @@ export function createFeatureCollector(roleByPreset = {}) {
     sessions.delete(sessionId)
   }
 
-  return { observeSessionEvent, observeRequestError, observeAgentError, forgetSession }
+  return { observeSessionEvent, observeToolResult, observeRequestError, observeAgentError, forgetSession }
 }

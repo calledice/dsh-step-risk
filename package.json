@@ -1,6 +1,6 @@
 {
   "name": "dsh-step-risk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Step contribution estimates and evaluated turn-failure forecasts for DeepSeek Harness",
   "type": "module",
   "main": "./index.js",

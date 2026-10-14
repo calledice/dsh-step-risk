@@ -78,7 +78,13 @@ window.__ModuleLoader__.load({
       const turnRisk = row.turnRisk || {}
       const factors = estimate.factors || {}
       const names = list(row.toolNames)
-      const outcome = { success: '工具未标错', error: '工具报错', unknown: '未知' }[row.outcome] || '未知'
+      const legacyShellSuccess = row.observationVersion === undefined && row.outcome === 'success'
+        && names.some(name => name === 'bash' || name === 'pwsh')
+      const outcome = legacyShellSuccess ? '旧口径：工具未标错，命令退出状态未知' : {
+        success: '工具执行未见错误',
+        error: '本步出现执行错误信号',
+        unknown: '执行结果未知',
+      }[row.outcome] || '执行结果未知'
       const operation = { action: '执行操作', read: '读取', verification: '验证', unknown: '未知' }[row.operation] || '未知'
       const reasons = list(estimate.reasons)
       const limitations = list(estimate.limitations)
@@ -91,6 +97,8 @@ window.__ModuleLoader__.load({
         h('strong', { style: { fontSize: 13 } }, 'Turn ', row.turn, ' / Step ', row.step),
         h('strong', { style: { fontSize: 22, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } }, percent(estimate.value))),
       h('div', { style: { color: MUTED, fontSize: 11, marginTop: 2 } }, '本步问题最终影响估计 · 未校准'),
+      legacyShellSuccess ? h('div', { style: { color: MUTED, fontSize: 11, marginTop: 2 } },
+        '该数值沿用旧版步骤观测，未核实命令退出状态，不能据此断言命令成功。') : null,
       h('div', { style: { color: MUTED, fontSize: 12, marginTop: 4 } },
         '实际结果：', outcome, ' · ', operation, ' · ', row.role || 'unknown'),
       h('div', { style: { marginTop: 8, fontSize: 12 } }, names.length ? names.join(' · ') : '无工具调用'),
@@ -103,6 +111,8 @@ window.__ModuleLoader__.load({
             ' · 变化 ', percentagePoints(turnRisk.delta), '（变化不代表因果贡献）')
           : h('div', { style: { color: MUTED } }, turnRisk.status === 'incomplete_prefix'
             ? '本轮较早步骤未保留，无法重建完整历史前缀。'
+            : turnRisk.status === 'legacy_observation'
+              ? '同轮旧记录采用不同的执行结果判定口径，当前模型无法回算。'
             : '需要同源、人工核验的成功与失败 turn 标签及留出验证。'),
         turnRisk.status === 'evaluated_model'
           ? h('div', { style: { color: MUTED } },
@@ -170,7 +180,10 @@ window.__ModuleLoader__.load({
       h('strong', null, 'Turn ', active.turn, ' / Step ', active.step, ' 执行前 · 本轮目标终局失败风险：'),
       active.status === 'evaluated_model' ? percent(active.value) : '暂无可用概率',
       active.status === 'incomplete_prefix'
-        ? h('div', { style: { color: MUTED } }, '本轮较早步骤未保留，执行前预测已弃权。') : null) : null,
+        ? h('div', { style: { color: MUTED } }, '本轮较早步骤未保留，执行前预测已弃权。')
+        : active.status === 'legacy_observation'
+          ? h('div', { style: { color: MUTED } }, '同轮旧记录采用不同的执行结果判定口径，执行前预测已弃权。')
+          : null) : null,
       state.error ? h('div', {
         role: 'alert', style: { border: '1px solid ' + BORDER, borderRadius: 8, padding: 10, lineHeight: 1.6, marginBottom: 12 },
       }, state.error, data ? ' 当前保留上次成功读取的数据。' : ' 请确认插件 Host 已启用。') : null,

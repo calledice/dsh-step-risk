@@ -1,5 +1,5 @@
 {
-  "verifiedAt": "2026-10-13T09:31:16.487Z",
+  "verifiedAt": "2026-10-14T04:01:58.335Z",
   "dshVersion": "0.2.0-rc.2",
   "electronVersion": "44.0.0",
   "nodeVersion": "24.18.1",
@@ -12,20 +12,24 @@
   "loader": true,
   "realAgentLoop": true,
   "realSessionEvents": true,
-  "realToolExecutions": 2,
-  "completedSteps": 3,
-  "modelCalls": 3,
+  "realToolExecutions": 3,
+  "nativeBashNonzeroExit": 3,
+  "nativeBashResultIsError": false,
+  "completedSteps": 4,
+  "modelCalls": 4,
   "stepFailure": true,
-  "preStepForecasts": 3,
-  "numericForecasts": 3,
+  "preStepForecasts": 4,
+  "numericForecasts": 4,
   "turnRiskStatus": "ready",
   "stepOutcomes": [
     "success",
+    "error",
     "error",
     "unknown"
   ],
   "stepFailureValues": [
     0.012,
+    0.135,
     0.135,
     0.045
   ],

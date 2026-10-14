@@ -163,10 +163,36 @@ test('native view scopes desktop GET reads, renders decimals and never sends a b
   assert.match(text, /2\.4%/)
   assert.match(text, /experimental_uncalibrated/)
   assert.match(text, /暂无可用概率/)
-  assert.match(text, /实际结果：\s*工具未标错/)
+  assert.match(text, /实际结果：\s*工具执行未见错误/)
   assert.match(text, /20\.0%/)
   app.unmount()
   assert.equal(app.timers.size, 0)
+})
+
+test('legacy shell success warns that exit status is unknown without changing current observations', async () => {
+  for (const name of ['bash', 'pwsh']) {
+    const app = harness({ fetcher: async () => ({ ok: true, json: async () => snapshot([
+      step(1, 0.012, { toolNames: [name], operation: 'unknown' }),
+    ]) }) })
+    app.mount(nativeKey, nativeProps())
+    await app.flush()
+    const content = textContent(app.tree)
+    assert.match(content, /1\.2%/)
+    assert.match(content, /实际结果：\s*旧口径：工具未标错，命令退出状态未知/)
+    assert.match(content, /该数值沿用旧版步骤观测，未核实命令退出状态，不能据此断言命令成功/)
+    app.unmount()
+  }
+
+  const current = harness({ fetcher: async () => ({ ok: true, json: async () => snapshot([
+    step(1, 0.012, { toolNames: ['bash'], operation: 'unknown',
+      observationVersion: 'structured-shell-exit-v1' }),
+  ]) }) })
+  current.mount(nativeKey, nativeProps())
+  await current.flush()
+  const currentContent = textContent(current.tree)
+  assert.match(currentContent, /实际结果：\s*工具执行未见错误/)
+  assert.doesNotMatch(currentContent, /旧口径：|该数值沿用旧版步骤观测/)
+  current.unmount()
 })
 
 test('evaluated turn forecast shows pre/post values and a non-causal change', async () => {
